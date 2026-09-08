@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-import dataflow.compiler as compiler
+from dataflow import compiler
 from dataflow.contracts import OperatorKind, RuntimeSpec
 
 
