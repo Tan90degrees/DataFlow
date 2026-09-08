@@ -24,6 +24,7 @@ dev = [
 [project.scripts]
 dataflow-runtime = "dataflow.cli:run_plan"
 dataflow-render-rayjob = "dataflow.cli:render_rayjob"
+dataflow-compile = "dataflow.cli:compile_pipeline_cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dataflow"]
