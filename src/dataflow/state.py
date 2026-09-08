@@ -93,6 +93,7 @@ _UNIT_TRANSITIONS: dict[ExecutionUnitStatus, frozenset[ExecutionUnitStatus]] = {
         {
             ExecutionUnitStatus.RUNNING,
             ExecutionUnitStatus.RETRY_WAIT,
+            ExecutionUnitStatus.SUCCEEDED,
             ExecutionUnitStatus.FAILED,
             ExecutionUnitStatus.CANCELLED,
             ExecutionUnitStatus.UNKNOWN,
@@ -132,6 +133,7 @@ _ATTEMPT_TRANSITIONS: dict[ExecutionAttemptStatus, frozenset[ExecutionAttemptSta
     ExecutionAttemptStatus.SUBMITTING: frozenset(
         {
             ExecutionAttemptStatus.RUNNING,
+            ExecutionAttemptStatus.SUCCEEDED,
             ExecutionAttemptStatus.FAILED,
             ExecutionAttemptStatus.CANCELLED,
             ExecutionAttemptStatus.UNKNOWN,
