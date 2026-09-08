@@ -53,6 +53,7 @@ def make_plan() -> ExecutionPlan:
                 },
                 {"id": "write", "kind": "write_parquet", "config": {"path": "s3://out"}},
             ],
+            "runtime": {"image": "dataflow-runtime:test"},
         }
     )
 

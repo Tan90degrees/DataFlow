@@ -50,12 +50,23 @@ Render the equivalent KubeRay `RayJob` manifest:
 dataflow-render-rayjob examples/basic_plan.json
 ```
 
+## Runtime image
+
+The RayJob entrypoint imports the `dataflow` package, so production plans must reference an image that contains this repository's runtime package. Build the development image with:
+
+```bash
+docker build -t dataflow-runtime:dev .
+```
+
+Push that image to a registry reachable by the Kubernetes cluster and set `runtime.image` in the execution plan to the pushed immutable tag. Do not point production execution plans at a stock Ray image unless DataFlow is supplied through an explicit Ray runtime environment.
+
 ## Current milestone
 
 - [x] Versioned execution-plan contract
 - [x] Ray Data runtime driver
 - [x] KubeRay RayJob renderer
 - [x] Unit-testable operator compiler
+- [x] Runtime container definition
 - [ ] Pipeline/DAG compiler
 - [ ] Scheduler and state machine
 - [ ] PostgreSQL metadata store

@@ -35,7 +35,7 @@ class OperatorSpec(BaseModel):
 class RuntimeSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    image: str = "rayproject/ray:2.58.0-py311"
+    image: str = Field(min_length=1)
     ray_address: str = "auto"
     namespace: str = "default"
     service_account: str | None = None
@@ -51,7 +51,7 @@ class ExecutionPlan(BaseModel):
     run_id: str = Field(min_length=1)
     unit_id: str = Field(min_length=1)
     operators: list[OperatorSpec] = Field(min_length=2)
-    runtime: RuntimeSpec = Field(default_factory=RuntimeSpec)
+    runtime: RuntimeSpec
 
     @model_validator(mode="after")
     def validate_operator_chain(self) -> "ExecutionPlan":
