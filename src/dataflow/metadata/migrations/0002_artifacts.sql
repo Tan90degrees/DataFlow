@@ -2,7 +2,7 @@ CREATE TABLE artifacts (
     id UUID PRIMARY KEY,
     pipeline_run_id UUID NOT NULL REFERENCES pipeline_runs(id),
     node_id TEXT NOT NULL,
-    execution_unit_id UUID REFERENCES execution_units(id),
+    execution_unit_id UUID NOT NULL REFERENCES execution_units(id),
     attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
     format TEXT NOT NULL CHECK (format IN ('parquet')),
     state TEXT NOT NULL CHECK (state IN ('STAGING', 'COMMITTED', 'ABORTED')),
@@ -16,7 +16,9 @@ CREATE TABLE artifacts (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     committed_at TIMESTAMPTZ,
     aborted_at TIMESTAMPTZ,
-    UNIQUE (pipeline_run_id, node_id, attempt_number)
+    UNIQUE (pipeline_run_id, node_id, attempt_number),
+    FOREIGN KEY (execution_unit_id, attempt_number)
+        REFERENCES execution_attempts(execution_unit_id, attempt_number)
 );
 
 CREATE UNIQUE INDEX uq_artifacts_committed_logical_output
@@ -45,6 +47,7 @@ BEGIN
 
     IF NEW.pipeline_run_id <> OLD.pipeline_run_id
        OR NEW.node_id <> OLD.node_id
+       OR NEW.execution_unit_id <> OLD.execution_unit_id
        OR NEW.attempt_number <> OLD.attempt_number
        OR NEW.staging_uri <> OLD.staging_uri
        OR NEW.committed_uri <> OLD.committed_uri
