@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 import psycopg
@@ -16,12 +17,12 @@ from psycopg.types.json import Jsonb
 
 from dataflow.compiler import ExecutionGraph
 from dataflow.state import (
-    ExecutionAttemptStatus,
-    ExecutionUnitStatus,
-    PipelineRunStatus,
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
     TERMINAL_UNIT_STATUSES,
+    ExecutionAttemptStatus,
+    ExecutionUnitStatus,
+    PipelineRunStatus,
     validate_attempt_transition,
     validate_run_transition,
     validate_unit_transition,
