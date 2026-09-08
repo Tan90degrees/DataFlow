@@ -9,17 +9,19 @@ DataFlow owns workflow state, DAG compilation, retries, artifacts, and lifecycle
 The execution path is now:
 
 ```text
-PipelineSpec -> LogicalGraph -> ExecutionGraph -> Durable State -> ExecutionPlan -> Ray Data -> KubeRay RayJob
+PipelineSpec -> LogicalGraph -> ExecutionGraph -> Durable State -> Scheduler/Reconciler -> ExecutionPlan -> Ray Data -> KubeRay RayJob
 ```
 
 The compiler groups compatible linear data operators into execution islands instead of creating one RayJob per DAG node. Hard boundaries, runtime changes, cluster-profile changes, and data fan-out materialize through an internal Parquet staging path. Transactional artifact semantics are intentionally deferred to the artifact milestone.
 
-PostgreSQL is the durable orchestration source of truth. Pipeline versions are immutable, execution attempts are append-only, and run/unit/attempt state transitions append an event in the same transaction. Ray and Kubernetes status are treated as external observed state that the reconciler will converge against this durable state.
+PostgreSQL is the durable orchestration source of truth. Pipeline versions are immutable, execution attempts are append-only, and run/unit/attempt state transitions append an event in the same transaction. Ray and Kubernetes status are external observed state that the reconciler converges against durable desired state.
+
+The scheduler uses `all_success` dependency semantics: a PENDING execution unit becomes READY only after every upstream unit succeeds. The reconciler submits READY units through an `Executor` interface, tracks attempt-specific external jobs, retries recoverable failures as new attempts with backoff, and propagates cancellation without creating new downstream work. KubeRay RayJob names are deterministic per run, unit, and attempt so repeated reconcile calls and controller restarts converge on the same Kubernetes object.
 
 ## Repository layout
 
 ```text
-src/dataflow/                    Core contracts, DAG compiler, runtime, and KubeRay adapter
+src/dataflow/                    Core contracts, compiler, scheduler, reconciler, runtime, and KubeRay adapter
 src/dataflow/metadata/           PostgreSQL repository and packaged migrations
 examples/                        Pipeline and execution-plan examples
 tests/                           Unit and PostgreSQL integration tests
@@ -38,7 +40,7 @@ ruff check .
 pytest
 ```
 
-PostgreSQL metadata integration tests run when `DATAFLOW_TEST_DATABASE_URL` is configured. Apply packaged migrations manually with:
+PostgreSQL metadata and control-plane integration tests run when `DATAFLOW_TEST_DATABASE_URL` is configured. Apply packaged migrations manually with:
 
 ```bash
 dataflow-migrate --dsn postgresql://postgres:postgres@localhost:5432/dataflow
@@ -48,6 +50,12 @@ Ray is an optional runtime dependency for local unit tests. Install the runtime 
 
 ```bash
 pip install -e '.[runtime]'
+```
+
+Install the Kubernetes client when running the live KubeRay control plane:
+
+```bash
+pip install -e '.[control-plane]'
 ```
 
 Compile a pipeline into physical execution units:
@@ -89,6 +97,6 @@ Push that image to a registry reachable by the Kubernetes cluster and set `runti
 - [x] Hard-boundary materialization convention
 - [x] Durable orchestration state machine
 - [x] PostgreSQL metadata store and migrations
-- [ ] Scheduler
-- [ ] Idempotent Kubernetes/KubeRay reconciler
+- [x] Scheduler
+- [x] Idempotent Kubernetes/KubeRay reconciler
 - [ ] Durable artifacts/checkpoints
