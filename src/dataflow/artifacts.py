@@ -212,10 +212,10 @@ class Boto3S3ObjectClient:
 class S3ParquetArtifactStorage:
     """Copy-on-commit Parquet publisher for S3-compatible object stores.
 
-    Ray Data writes to an immutable attempt-specific staging prefix. Commit copies
-    those objects to the stable logical output prefix and writes the commit marker
-    last. PostgreSQL decides logical visibility; the marker provides an additional
-    object-store-level completeness signal.
+    Ray Data writes to an immutable attempt-specific staging prefix. Every publish
+    first clears the not-yet-committed stable prefix, then copies the current
+    attempt's objects and writes the commit marker last. PostgreSQL decides logical
+    visibility; the marker provides an additional object-store completeness signal.
     """
 
     COMMIT_MARKER = "_dataflow_commit.json"
@@ -245,10 +245,12 @@ class S3ParquetArtifactStorage:
 
         source_bucket, source_prefix = _parse_s3_uri(staging_uri)
         destination_bucket, destination_prefix = _parse_s3_uri(committed_uri)
+        source_list_prefix = _directory_prefix(source_prefix)
+        destination_list_prefix = _directory_prefix(destination_prefix)
         source_objects = [
             item
-            for item in self._client.list_objects(source_bucket, source_prefix)
-            if not item.key.endswith("/" + self.COMMIT_MARKER)
+            for item in self._client.list_objects(source_bucket, source_list_prefix)
+            if item.key != _join_key(destination_list_prefix, self.COMMIT_MARKER)
         ]
         if not source_objects:
             raise ArtifactCommitError(f"staging artifact is empty: {staging_uri}")
@@ -256,8 +258,17 @@ class S3ParquetArtifactStorage:
         total_size = 0
         digest = hashlib.sha256()
         try:
+            stale_objects = self._client.list_objects(
+                destination_bucket,
+                destination_list_prefix,
+            )
+            self._client.delete_objects(
+                bucket=destination_bucket,
+                keys=[item.key for item in stale_objects],
+            )
+
             for item in sorted(source_objects, key=lambda value: value.key):
-                relative = item.key[len(source_prefix) :].lstrip("/")
+                relative = item.key[len(source_list_prefix) :]
                 if not relative:
                     continue
                 destination_key = _join_key(destination_prefix, relative)
@@ -307,7 +318,7 @@ class S3ParquetArtifactStorage:
     def abort(self, staging_uri: str) -> None:
         bucket, prefix = _parse_s3_uri(staging_uri)
         try:
-            objects = self._client.list_objects(bucket, prefix)
+            objects = self._client.list_objects(bucket, _directory_prefix(prefix))
             self._client.delete_objects(bucket=bucket, keys=[item.key for item in objects])
         except Exception as error:
             raise ArtifactCommitError(
@@ -332,13 +343,18 @@ def staging_artifact_uri_template(base_uri: str, run_id: str, node_id: str) -> s
 
 def _parse_s3_uri(uri: str) -> tuple[str, str]:
     parsed = urlparse(uri)
-    if parsed.scheme != "s3" or not parsed.netloc:
+    prefix = parsed.path.lstrip("/").rstrip("/")
+    if parsed.scheme != "s3" or not parsed.netloc or not prefix:
         raise ArtifactCommitError(
-            f"expected s3:// URI, got {uri!r}",
+            f"expected s3://bucket/non-empty-prefix URI, got {uri!r}",
             error_code="INVALID_ARTIFACT_URI",
             retryable=False,
         )
-    return parsed.netloc, parsed.path.lstrip("/").rstrip("/")
+    return parsed.netloc, prefix
+
+
+def _directory_prefix(prefix: str) -> str:
+    return prefix.rstrip("/") + "/"
 
 
 def _join_key(prefix: str, suffix: str) -> str:
