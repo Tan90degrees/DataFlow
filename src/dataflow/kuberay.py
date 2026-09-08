@@ -9,7 +9,6 @@ from typing import Any, Protocol
 from dataflow.contracts import ExecutionPlan
 from dataflow.executor import ExecutorError, ExternalJob, ExternalJobState
 
-
 RAY_GROUP = "ray.io"
 RAY_VERSION = "v1"
 RAYJOB_PLURAL = "rayjobs"
