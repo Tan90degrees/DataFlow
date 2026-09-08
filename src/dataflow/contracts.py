@@ -54,7 +54,7 @@ class ExecutionPlan(BaseModel):
     runtime: RuntimeSpec
 
     @model_validator(mode="after")
-    def validate_operator_chain(self) -> "ExecutionPlan":
+    def validate_operator_chain(self) -> ExecutionPlan:
         ids = [op.id for op in self.operators]
         if len(ids) != len(set(ids)):
             raise ValueError("operator ids must be unique")

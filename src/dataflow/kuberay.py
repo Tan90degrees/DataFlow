@@ -27,6 +27,11 @@ def render_rayjob(plan: ExecutionPlan) -> dict:
         pod_spec["serviceAccountName"] = plan.runtime.service_account
 
     plan_json = json.dumps(plan.model_dump(mode="json"), separators=(",", ":"))
+    runtime_env_yaml = (
+        "env_vars:\n  DATAFLOW_EXECUTION_PLAN: '"
+        + plan_json.replace("'", "''")
+        + "'\n"
+    )
 
     return {
         "apiVersion": "ray.io/v1",
@@ -38,7 +43,7 @@ def render_rayjob(plan: ExecutionPlan) -> dict:
         },
         "spec": {
             "entrypoint": "python -m dataflow.cli run-inline-plan",
-            "runtimeEnvYAML": "env_vars:\n  DATAFLOW_EXECUTION_PLAN: '" + plan_json.replace("'", "''") + "'\n",
+            "runtimeEnvYAML": runtime_env_yaml,
             "shutdownAfterJobFinishes": True,
             "ttlSecondsAfterFinished": 300,
             "rayClusterSpec": {
