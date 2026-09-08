@@ -2,15 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from dataflow.compiler import (
-    EdgeKind,
-    ExecutionBoundary,
-    LogicalGraph,
-    PipelineCompiler,
-    PipelineEdgeSpec,
-    PipelineNodeSpec,
-    PipelineSpec,
-)
+import dataflow.compiler as compiler
 from dataflow.contracts import OperatorKind, RuntimeSpec
 
 
@@ -21,10 +13,10 @@ def _edge(
     source: str,
     target: str,
     *,
-    kind: EdgeKind = EdgeKind.DATA,
-    boundary: ExecutionBoundary = ExecutionBoundary.NONE,
-) -> PipelineEdgeSpec:
-    return PipelineEdgeSpec.model_validate(
+    kind: compiler.EdgeKind = compiler.EdgeKind.DATA,
+    boundary: compiler.ExecutionBoundary = compiler.ExecutionBoundary.NONE,
+) -> compiler.PipelineEdgeSpec:
+    return compiler.PipelineEdgeSpec.model_validate(
         {
             "from": source,
             "to": target,
@@ -34,28 +26,30 @@ def _edge(
     )
 
 
-def _linear_spec(*, boundary: ExecutionBoundary = ExecutionBoundary.NONE) -> PipelineSpec:
-    return PipelineSpec(
+def _linear_spec(
+    *, boundary: compiler.ExecutionBoundary = compiler.ExecutionBoundary.NONE
+) -> compiler.PipelineSpec:
+    return compiler.PipelineSpec(
         name="linear",
         runtime=RUNTIME,
         artifact_base_uri="s3://bucket/dataflow",
         nodes=[
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="read",
                 kind=OperatorKind.READ_PARQUET,
                 config={"path": "s3://bucket/input"},
             ),
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="map",
                 kind=OperatorKind.MAP_BATCHES,
                 config={"callable": "dataflow.callables.identity"},
             ),
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="filter",
                 kind=OperatorKind.FILTER,
                 config={"callable": "dataflow.callables.always_true"},
             ),
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="write",
                 kind=OperatorKind.WRITE_PARQUET,
                 config={"path": "s3://bucket/output"},
@@ -70,7 +64,7 @@ def _linear_spec(*, boundary: ExecutionBoundary = ExecutionBoundary.NONE) -> Pip
 
 
 def test_linear_pipeline_compiles_to_one_execution_unit() -> None:
-    graph = PipelineCompiler().compile(_linear_spec(), run_id="run-1")
+    graph = compiler.PipelineCompiler().compile(_linear_spec(), run_id="run-1")
 
     assert [unit.id for unit in graph.units] == ["unit-001"]
     assert graph.units[0].node_ids == ["read", "map", "filter", "write"]
@@ -84,8 +78,8 @@ def test_linear_pipeline_compiles_to_one_execution_unit() -> None:
 
 
 def test_hard_boundary_materializes_between_execution_units() -> None:
-    graph = PipelineCompiler().compile(
-        _linear_spec(boundary=ExecutionBoundary.HARD),
+    graph = compiler.PipelineCompiler().compile(
+        _linear_spec(boundary=compiler.ExecutionBoundary.HARD),
         run_id="run-2",
     )
 
@@ -109,7 +103,7 @@ def test_runtime_change_is_a_hard_physical_boundary() -> None:
     spec = _linear_spec()
     spec.nodes[2].runtime = RuntimeSpec(image="ghcr.io/example/dataflow:other")
 
-    graph = PipelineCompiler().compile(spec, run_id="run-runtime")
+    graph = compiler.PipelineCompiler().compile(spec, run_id="run-runtime")
 
     assert [unit.node_ids for unit in graph.units] == [
         ["read", "map"],
@@ -119,32 +113,32 @@ def test_runtime_change_is_a_hard_physical_boundary() -> None:
 
 
 def test_data_fan_out_materializes_once_and_reuses_upstream_artifact() -> None:
-    spec = PipelineSpec(
+    spec = compiler.PipelineSpec(
         name="fan-out",
         runtime=RUNTIME,
         artifact_base_uri="s3://bucket/dataflow",
         nodes=[
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="read",
                 kind=OperatorKind.READ_PARQUET,
                 config={"path": "s3://bucket/input"},
             ),
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="left",
                 kind=OperatorKind.FILTER,
                 config={"callable": "dataflow.callables.always_true"},
             ),
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="left_write",
                 kind=OperatorKind.WRITE_PARQUET,
                 config={"path": "s3://bucket/left"},
             ),
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="right",
                 kind=OperatorKind.FILTER,
                 config={"callable": "dataflow.callables.always_true"},
             ),
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="right_write",
                 kind=OperatorKind.WRITE_PARQUET,
                 config={"path": "s3://bucket/right"},
@@ -158,7 +152,7 @@ def test_data_fan_out_materializes_once_and_reuses_upstream_artifact() -> None:
         ],
     )
 
-    graph = PipelineCompiler().compile(spec, run_id="fan-out-run")
+    graph = compiler.PipelineCompiler().compile(spec, run_id="fan-out-run")
 
     assert [unit.node_ids for unit in graph.units] == [
         ["read"],
@@ -172,75 +166,75 @@ def test_data_fan_out_materializes_once_and_reuses_upstream_artifact() -> None:
 
 
 def test_logical_graph_topological_order_is_deterministic_for_diamond() -> None:
-    spec = PipelineSpec(
+    spec = compiler.PipelineSpec(
         name="control-diamond",
         runtime=RUNTIME,
         nodes=[
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="a",
                 kind=OperatorKind.READ_PARQUET,
                 config={"path": "x"},
             ),
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="b",
                 kind=OperatorKind.WRITE_PARQUET,
                 config={"path": "b"},
             ),
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="c",
                 kind=OperatorKind.WRITE_PARQUET,
                 config={"path": "c"},
             ),
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="d",
                 kind=OperatorKind.WRITE_PARQUET,
                 config={"path": "d"},
             ),
         ],
         edges=[
-            _edge("a", "b", kind=EdgeKind.CONTROL),
-            _edge("a", "c", kind=EdgeKind.CONTROL),
-            _edge("b", "d", kind=EdgeKind.CONTROL),
-            _edge("c", "d", kind=EdgeKind.CONTROL),
+            _edge("a", "b", kind=compiler.EdgeKind.CONTROL),
+            _edge("a", "c", kind=compiler.EdgeKind.CONTROL),
+            _edge("b", "d", kind=compiler.EdgeKind.CONTROL),
+            _edge("c", "d", kind=compiler.EdgeKind.CONTROL),
         ],
     )
 
-    assert LogicalGraph(spec).topological_order == ["a", "b", "c", "d"]
+    assert compiler.LogicalGraph(spec).topological_order == ["a", "b", "c", "d"]
 
 
 def test_cycle_is_rejected() -> None:
-    spec = PipelineSpec(
+    spec = compiler.PipelineSpec(
         name="cycle",
         runtime=RUNTIME,
         nodes=[
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="a",
                 kind=OperatorKind.READ_PARQUET,
                 config={"path": "x"},
             ),
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="b",
                 kind=OperatorKind.WRITE_PARQUET,
                 config={"path": "y"},
             ),
         ],
         edges=[
-            _edge("a", "b", kind=EdgeKind.CONTROL),
-            _edge("b", "a", kind=EdgeKind.CONTROL),
+            _edge("a", "b", kind=compiler.EdgeKind.CONTROL),
+            _edge("b", "a", kind=compiler.EdgeKind.CONTROL),
         ],
     )
 
     with pytest.raises(ValueError, match="cycle"):
-        LogicalGraph(spec)
+        compiler.LogicalGraph(spec)
 
 
 def test_dangling_edge_is_rejected() -> None:
     with pytest.raises(ValueError, match="unknown node"):
-        PipelineSpec(
+        compiler.PipelineSpec(
             name="dangling",
             runtime=RUNTIME,
             nodes=[
-                PipelineNodeSpec(
+                compiler.PipelineNodeSpec(
                     id="a",
                     kind=OperatorKind.READ_PARQUET,
                     config={"path": "x"},
@@ -251,27 +245,27 @@ def test_dangling_edge_is_rejected() -> None:
 
 
 def test_data_fan_in_is_explicitly_rejected_in_v1_runtime() -> None:
-    spec = PipelineSpec(
+    spec = compiler.PipelineSpec(
         name="fan-in",
         runtime=RUNTIME,
         artifact_base_uri="s3://bucket/dataflow",
         nodes=[
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="a",
                 kind=OperatorKind.READ_PARQUET,
                 config={"path": "a"},
             ),
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="b",
                 kind=OperatorKind.READ_PARQUET,
                 config={"path": "b"},
             ),
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="c",
                 kind=OperatorKind.MAP_BATCHES,
                 config={"callable": "dataflow.callables.identity"},
             ),
-            PipelineNodeSpec(
+            compiler.PipelineNodeSpec(
                 id="d",
                 kind=OperatorKind.WRITE_PARQUET,
                 config={"path": "d"},
@@ -284,14 +278,14 @@ def test_data_fan_in_is_explicitly_rejected_in_v1_runtime() -> None:
         ],
     )
 
-    assert LogicalGraph(spec).topological_order == ["a", "b", "c", "d"]
+    assert compiler.LogicalGraph(spec).topological_order == ["a", "b", "c", "d"]
     with pytest.raises(ValueError, match="fan-in"):
-        PipelineCompiler().compile(spec, run_id="run-fanin")
+        compiler.PipelineCompiler().compile(spec, run_id="run-fanin")
 
 
 def test_compile_output_is_deterministic() -> None:
-    compiler = PipelineCompiler()
-    first = compiler.compile(_linear_spec(), run_id="same-run")
-    second = compiler.compile(_linear_spec(), run_id="same-run")
+    pipeline_compiler = compiler.PipelineCompiler()
+    first = pipeline_compiler.compile(_linear_spec(), run_id="same-run")
+    second = pipeline_compiler.compile(_linear_spec(), run_id="same-run")
 
     assert first.model_dump(mode="json") == second.model_dump(mode="json")
