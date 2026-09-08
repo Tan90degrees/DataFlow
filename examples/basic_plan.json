@@ -1,0 +1,37 @@
+{
+  "api_version": "dataflow.io/v1alpha1",
+  "kind": "ExecutionPlan",
+  "run_id": "example-run",
+  "unit_id": "etl-unit",
+  "operators": [
+    {
+      "id": "read",
+      "kind": "read_parquet",
+      "config": {"path": "s3://example-bucket/input/"}
+    },
+    {
+      "id": "identity",
+      "kind": "map_batches",
+      "config": {
+        "callable": "dataflow.callables.identity_batch",
+        "batch_size": 1024
+      },
+      "resources": {"cpu": 2}
+    },
+    {
+      "id": "keep-all",
+      "kind": "filter",
+      "config": {"callable": "dataflow.callables.keep_all"}
+    },
+    {
+      "id": "write",
+      "kind": "write_parquet",
+      "config": {"path": "s3://example-bucket/output/"}
+    }
+  ],
+  "runtime": {
+    "image": "dataflow-runtime:dev",
+    "ray_address": "auto",
+    "namespace": "default"
+  }
+}

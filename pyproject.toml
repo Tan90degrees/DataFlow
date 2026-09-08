@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dataflow-orchestrator"
+version = "0.1.0"
+description = "Ray-native distributed data processing orchestration runtime"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.8,<3",
+  "PyYAML>=6.0,<7",
+]
+
+[project.optional-dependencies]
+runtime = ["ray[data]==2.58.0"]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-cov>=5,<6",
+  "ruff>=0.6,<1",
+]
+
+[project.scripts]
+dataflow-runtime = "dataflow.cli:run_plan"
+dataflow-render-rayjob = "dataflow.cli:render_rayjob"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dataflow"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
