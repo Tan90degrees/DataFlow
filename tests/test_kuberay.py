@@ -61,7 +61,9 @@ def test_render_rayjob_contains_traceable_identity_and_runtime() -> None:
     assert manifest["spec"]["shutdownAfterJobFinishes"] is True
     head = manifest["spec"]["rayClusterSpec"]["headGroupSpec"]["template"]["spec"]
     assert head["serviceAccountName"] == "dataflow-runner"
-    assert "DATAFLOW_EXECUTION_PLAN" in manifest["spec"]["runtimeEnvYAML"]
+    runtime_env = manifest["spec"]["runtimeEnvYAML"]
+    assert "DATAFLOW_EXECUTION_PLAN" in runtime_env
+    assert "DATAFLOW_ATTEMPT_NUMBER: '2'" in runtime_env
 
 
 def test_attempt_names_remain_unique_when_identity_is_long() -> None:
