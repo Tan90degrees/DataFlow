@@ -28,15 +28,22 @@ def _load_pipeline(path: str) -> PipelineSpec:
 def run_plan() -> None:
     parser = argparse.ArgumentParser(description="Execute a DataFlow ExecutionPlan with Ray Data")
     parser.add_argument("plan")
+    parser.add_argument("--attempt-number", type=int)
     args = parser.parse_args()
-    execute_with_ray(_load_plan(args.plan))
+    execute_with_ray(_load_plan(args.plan), attempt_number=args.attempt_number)
 
 
 def render_rayjob() -> None:
     parser = argparse.ArgumentParser(description="Render a KubeRay RayJob for a DataFlow plan")
     parser.add_argument("plan")
+    parser.add_argument("--attempt-number", type=int)
     args = parser.parse_args()
-    print(yaml.safe_dump(build_rayjob(_load_plan(args.plan)), sort_keys=False))
+    print(
+        yaml.safe_dump(
+            build_rayjob(_load_plan(args.plan), attempt_number=args.attempt_number),
+            sort_keys=False,
+        )
+    )
 
 
 def compile_pipeline_cli() -> None:
@@ -52,7 +59,12 @@ def run_inline_plan() -> None:
     raw = os.environ.get("DATAFLOW_EXECUTION_PLAN")
     if not raw:
         raise RuntimeError("DATAFLOW_EXECUTION_PLAN is required")
-    execute_with_ray(ExecutionPlan.model_validate_json(raw))
+    attempt_raw = os.environ.get("DATAFLOW_ATTEMPT_NUMBER")
+    attempt_number = int(attempt_raw) if attempt_raw else None
+    execute_with_ray(
+        ExecutionPlan.model_validate_json(raw),
+        attempt_number=attempt_number,
+    )
 
 
 def main() -> None:
