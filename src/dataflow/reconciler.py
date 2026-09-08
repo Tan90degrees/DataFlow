@@ -211,7 +211,7 @@ class Reconciler:
             try:
                 self._commit_artifacts(plan, attempt.attempt_number)
             except ArtifactCommitError as error:
-                return self._handle_artifact_error(unit, attempt, error)
+                return self._handle_artifact_error(unit, attempt, plan, error)
             self._transition_attempt(
                 attempt,
                 ExecutionAttemptStatus.SUCCEEDED,
@@ -263,8 +263,16 @@ class Reconciler:
                 self._commit_artifacts(plan, attempt.attempt_number)
             except ArtifactCommitError as error:
                 if error.retryable:
-                    return self._transition_unit(unit, ExecutionUnitStatus.UNKNOWN)
-                raise
+                    return self._transition_unit(
+                        unit,
+                        ExecutionUnitStatus.UNKNOWN,
+                        payload={"error_code": error.error_code},
+                    )
+                return self._transition_unit(
+                    unit,
+                    ExecutionUnitStatus.FAILED,
+                    payload={"error_code": error.error_code},
+                )
             return self._transition_unit(unit, ExecutionUnitStatus.SUCCEEDED)
         if attempt.status is ExecutionAttemptStatus.CANCELLED:
             self._abort_artifacts(plan, attempt.attempt_number)
@@ -342,6 +350,7 @@ class Reconciler:
         self,
         unit: ExecutionUnitRecord,
         attempt: ExecutionAttemptRecord,
+        plan: ExecutionPlan,
         error: ArtifactCommitError,
     ) -> ExecutionUnitRecord:
         if error.retryable:
@@ -360,7 +369,7 @@ class Reconciler:
                 )
             return unit
 
-        self._abort_artifacts_for_error(plan=None, attempt_number=None)
+        self._abort_artifacts(plan, attempt.attempt_number)
         self._transition_attempt(
             attempt,
             ExecutionAttemptStatus.FAILED,
@@ -422,13 +431,6 @@ class Reconciler:
             attempt_number=attempt_number,
             best_effort=True,
         )
-
-    @staticmethod
-    def _abort_artifacts_for_error(
-        plan: ExecutionPlan | None,
-        attempt_number: int | None,
-    ) -> None:
-        del plan, attempt_number
 
     def _transition_unit(
         self,
