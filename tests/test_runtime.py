@@ -58,6 +58,26 @@ def make_plan() -> ExecutionPlan:
     )
 
 
+def make_artifact_plan() -> ExecutionPlan:
+    data = make_plan().model_dump(mode="json")
+    data["operators"][-1]["config"] = {}
+    data["output_artifacts"] = [
+        {
+            "run_id": "run-1",
+            "node_id": "filter",
+            "operator_id": "write",
+            "format": "parquet",
+            "durability": "durable",
+            "committed_uri": "s3://bucket/runs/run-1/artifacts/filter/committed",
+            "staging_uri_template": (
+                "s3://bucket/runs/run-1/artifacts/filter/attempts/{attempt_number}/data"
+            ),
+            "checkpoint": True,
+        }
+    ]
+    return ExecutionPlan.model_validate(data)
+
+
 def test_executor_preserves_operator_order_and_resources() -> None:
     backend = FakeBackend()
     PlanExecutor(backend).execute(make_plan())
@@ -71,6 +91,23 @@ def test_executor_preserves_operator_order_and_resources() -> None:
     assert backend.calls[1][2]["num_cpus"] == 2
     assert backend.calls[1][2]["num_gpus"] == 1
     assert backend.calls[1][2]["batch_size"] == 128
+
+
+def test_durable_writer_uses_attempt_specific_staging_uri() -> None:
+    backend = FakeBackend()
+
+    PlanExecutor(backend).execute(make_artifact_plan(), attempt_number=7)
+
+    assert backend.calls[-1] == (
+        "write_parquet",
+        ("s3://bucket/runs/run-1/artifacts/filter/attempts/007/data",),
+        {},
+    )
+
+
+def test_durable_writer_rejects_missing_attempt_identity() -> None:
+    with pytest.raises(RuntimeError, match="requires an attempt number"):
+        PlanExecutor(FakeBackend()).execute(make_artifact_plan())
 
 
 def test_plan_rejects_duplicate_operator_ids() -> None:
