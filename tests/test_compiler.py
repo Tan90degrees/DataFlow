@@ -74,9 +74,10 @@ def test_linear_pipeline_compiles_to_one_execution_unit() -> None:
         "write",
     ]
     assert graph.units[0].dependencies == []
+    assert graph.units[0].plan.output_artifacts == []
 
 
-def test_hard_boundary_materializes_between_execution_units() -> None:
+def test_hard_boundary_materializes_durable_artifact() -> None:
     graph = compiler.PipelineCompiler().compile(
         _linear_spec(boundary=compiler.ExecutionBoundary.HARD),
         run_id="run-2",
@@ -89,13 +90,30 @@ def test_hard_boundary_materializes_between_execution_units() -> None:
     first, second = graph.units
     assert second.dependencies == [first.id]
     assert first.plan.operators[-1].kind is OperatorKind.WRITE_PARQUET
-    assert first.plan.operators[-1].config["path"] == (
-        "s3://bucket/dataflow/run-2/unit-001"
+    assert first.plan.operators[-1].config == {}
+    output = first.plan.output_artifacts[0]
+    assert output.node_id == "map"
+    assert output.committed_uri == "s3://bucket/dataflow/runs/run-2/artifacts/map/committed"
+    assert output.staging_uri(3) == (
+        "s3://bucket/dataflow/runs/run-2/artifacts/map/attempts/003/data"
     )
+    assert output.checkpoint is False
     assert second.plan.operators[0].kind is OperatorKind.READ_PARQUET
-    assert second.plan.operators[0].config["path"] == (
-        "s3://bucket/dataflow/run-2/unit-001"
+    assert second.plan.operators[0].config["path"] == output.committed_uri
+    assert second.plan.input_artifacts[0].uri == output.committed_uri
+
+
+def test_checkpoint_boundary_is_explicit_durable_artifact() -> None:
+    graph = compiler.PipelineCompiler().compile(
+        _linear_spec(boundary=compiler.ExecutionBoundary.CHECKPOINT),
+        run_id="checkpoint-run",
     )
+
+    assert [unit.node_ids for unit in graph.units] == [
+        ["read", "map"],
+        ["filter", "write"],
+    ]
+    assert graph.units[0].plan.output_artifacts[0].checkpoint is True
 
 
 def test_runtime_override_is_node_scoped_and_creates_boundaries() -> None:
@@ -160,10 +178,10 @@ def test_data_fan_out_materializes_once_and_reuses_upstream_artifact() -> None:
         ["left", "left_write"],
         ["right", "right_write"],
     ]
-    stage_uri = "s3://bucket/dataflow/fan-out-run/unit-001"
-    assert graph.units[0].plan.operators[-1].config["path"] == stage_uri
-    assert graph.units[1].plan.operators[0].config["path"] == stage_uri
-    assert graph.units[2].plan.operators[0].config["path"] == stage_uri
+    committed_uri = "s3://bucket/dataflow/runs/fan-out-run/artifacts/read/committed"
+    assert graph.units[0].plan.output_artifacts[0].committed_uri == committed_uri
+    assert graph.units[1].plan.operators[0].config["path"] == committed_uri
+    assert graph.units[2].plan.operators[0].config["path"] == committed_uri
 
 
 def test_logical_graph_topological_order_is_deterministic_for_diamond() -> None:
@@ -201,6 +219,34 @@ def test_logical_graph_topological_order_is_deterministic_for_diamond() -> None:
     )
 
     assert compiler.LogicalGraph(spec).topological_order == ["a", "b", "c", "d"]
+
+
+def test_checkpoint_is_rejected_on_control_edge() -> None:
+    with pytest.raises(ValueError, match="checkpoint"):
+        compiler.PipelineSpec(
+            name="invalid-checkpoint",
+            runtime=RUNTIME,
+            nodes=[
+                compiler.PipelineNodeSpec(
+                    id="a",
+                    kind=OperatorKind.READ_PARQUET,
+                    config={"path": "a"},
+                ),
+                compiler.PipelineNodeSpec(
+                    id="b",
+                    kind=OperatorKind.WRITE_PARQUET,
+                    config={"path": "b"},
+                ),
+            ],
+            edges=[
+                _edge(
+                    "a",
+                    "b",
+                    kind=compiler.EdgeKind.CONTROL,
+                    boundary=compiler.ExecutionBoundary.CHECKPOINT,
+                )
+            ],
+        )
 
 
 def test_cycle_is_rejected() -> None:
