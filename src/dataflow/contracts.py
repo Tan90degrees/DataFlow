@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from dataflow.artifacts import ArtifactOutputSpec, ArtifactRef
+
 
 class OperatorKind(StrEnum):
     READ_PARQUET = "read_parquet"
@@ -52,6 +54,8 @@ class ExecutionPlan(BaseModel):
     unit_id: str = Field(min_length=1)
     operators: list[OperatorSpec] = Field(min_length=2)
     runtime: RuntimeSpec
+    input_artifacts: list[ArtifactRef] = Field(default_factory=list)
+    output_artifacts: list[ArtifactOutputSpec] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_operator_chain(self) -> ExecutionPlan:
@@ -62,4 +66,18 @@ class ExecutionPlan(BaseModel):
             raise ValueError("v1alpha1 execution plan must start with read_parquet")
         if self.operators[-1].kind is not OperatorKind.WRITE_PARQUET:
             raise ValueError("v1alpha1 execution plan must end with write_parquet")
+
+        operators = {operator.id: operator for operator in self.operators}
+        output_ids: set[str] = set()
+        for output in self.output_artifacts:
+            if output.run_id != self.run_id:
+                raise ValueError("artifact output run_id must match execution plan run_id")
+            if output.operator_id in output_ids:
+                raise ValueError("artifact output operator ids must be unique")
+            output_ids.add(output.operator_id)
+            operator = operators.get(output.operator_id)
+            if operator is None or operator.kind is not OperatorKind.WRITE_PARQUET:
+                raise ValueError(
+                    "artifact output operator_id must reference a write_parquet operator"
+                )
         return self
