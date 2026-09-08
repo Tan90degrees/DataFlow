@@ -9,6 +9,7 @@ description = "Ray-native distributed data processing orchestration runtime"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "psycopg[binary]>=3.2,<4",
   "pydantic>=2.8,<3",
   "PyYAML>=6.0,<7",
 ]
@@ -25,6 +26,7 @@ dev = [
 dataflow-runtime = "dataflow.cli:run_plan"
 dataflow-render-rayjob = "dataflow.cli:render_rayjob"
 dataflow-compile = "dataflow.cli:compile_pipeline_cli"
+dataflow-migrate = "dataflow.metadata.migrations:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dataflow"]
