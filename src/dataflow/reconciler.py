@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
@@ -73,7 +73,7 @@ class Reconciler:
         self._repository = repository
         self._executor = executor
         self._retry_policy = retry_policy or RetryPolicy()
-        self._now = now or (lambda: datetime.now(timezone.utc))
+        self._now = now or (lambda: datetime.now(UTC))
 
     def reconcile_unit(self, unit_id: UUID) -> ExecutionUnitRecord:
         unit = self._repository.get_unit(unit_id)
