@@ -9,18 +9,21 @@ DataFlow owns workflow state, DAG compilation, retries, artifacts, and lifecycle
 The execution path is now:
 
 ```text
-PipelineSpec -> LogicalGraph -> ExecutionGraph -> ExecutionPlan -> Ray Data -> KubeRay RayJob
+PipelineSpec -> LogicalGraph -> ExecutionGraph -> Durable State -> ExecutionPlan -> Ray Data -> KubeRay RayJob
 ```
 
 The compiler groups compatible linear data operators into execution islands instead of creating one RayJob per DAG node. Hard boundaries, runtime changes, cluster-profile changes, and data fan-out materialize through an internal Parquet staging path. Transactional artifact semantics are intentionally deferred to the artifact milestone.
 
+PostgreSQL is the durable orchestration source of truth. Pipeline versions are immutable, execution attempts are append-only, and run/unit/attempt state transitions append an event in the same transaction. Ray and Kubernetes status are treated as external observed state that the reconciler will converge against this durable state.
+
 ## Repository layout
 
 ```text
-src/dataflow/       Core contracts, DAG compiler, runtime, and KubeRay adapter
-examples/           Pipeline and execution-plan examples
-tests/              Unit tests
-docs/               Architecture decisions
+src/dataflow/                    Core contracts, DAG compiler, runtime, and KubeRay adapter
+src/dataflow/metadata/           PostgreSQL repository and packaged migrations
+examples/                        Pipeline and execution-plan examples
+tests/                           Unit and PostgreSQL integration tests
+docs/                            Architecture decisions
 ```
 
 ## Development
@@ -33,6 +36,12 @@ source .venv/bin/activate
 pip install -e '.[dev]'
 ruff check .
 pytest
+```
+
+PostgreSQL metadata integration tests run when `DATAFLOW_TEST_DATABASE_URL` is configured. Apply packaged migrations manually with:
+
+```bash
+dataflow-migrate --dsn postgresql://postgres:postgres@localhost:5432/dataflow
 ```
 
 Ray is an optional runtime dependency for local unit tests. Install the runtime extras to execute real Ray Data plans:
@@ -78,7 +87,8 @@ Push that image to a registry reachable by the Kubernetes cluster and set `runti
 - [x] PipelineSpec and deterministic LogicalGraph
 - [x] Execution-island compiler
 - [x] Hard-boundary materialization convention
-- [ ] Scheduler and state machine
-- [ ] PostgreSQL metadata store
-- [ ] Kubernetes reconciler
+- [x] Durable orchestration state machine
+- [x] PostgreSQL metadata store and migrations
+- [ ] Scheduler
+- [ ] Idempotent Kubernetes/KubeRay reconciler
 - [ ] Durable artifacts/checkpoints
