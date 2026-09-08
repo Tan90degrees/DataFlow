@@ -42,6 +42,7 @@ def repository(postgres_dsn: str) -> Iterator[PostgresMetadataRepository]:
         connection.execute(
             """
             TRUNCATE TABLE
+                artifacts,
                 events,
                 node_runs,
                 execution_attempts,
