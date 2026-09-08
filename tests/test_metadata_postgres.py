@@ -42,6 +42,7 @@ def repository(postgres_dsn: str) -> Iterator[PostgresMetadataRepository]:
         connection.execute(
             """
             TRUNCATE TABLE
+                artifacts,
                 events,
                 node_runs,
                 execution_attempts,
@@ -105,7 +106,7 @@ def test_migrations_are_idempotent(postgres_dsn: str) -> None:
         versions = connection.execute(
             "SELECT version FROM dataflow_schema_migrations ORDER BY version"
         ).fetchall()
-    assert versions == [("0001_initial.sql",)]
+    assert versions == [("0001_initial.sql",), ("0002_artifacts.sql",)]
 
 
 def test_pipeline_versions_are_immutable_and_hash_canonical(

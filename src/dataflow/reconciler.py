@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
+from dataflow.artifact_manager import ArtifactManager
+from dataflow.artifacts import ArtifactCommitError
 from dataflow.contracts import ExecutionPlan
 from dataflow.executor import (
     Executor,
@@ -68,11 +70,13 @@ class Reconciler:
         executor: Executor,
         *,
         retry_policy: RetryPolicy | None = None,
+        artifact_manager: ArtifactManager | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._repository = repository
         self._executor = executor
         self._retry_policy = retry_policy or RetryPolicy()
+        self._artifact_manager = artifact_manager
         self._now = now or (lambda: datetime.now(UTC))
 
     def reconcile_unit(self, unit_id: UUID) -> ExecutionUnitRecord:
@@ -117,7 +121,7 @@ class Reconciler:
             job = self._executor.submit(plan, attempt_number=attempt.attempt_number)
         except ExecutorError as error:
             return self._handle_executor_error(unit, attempt, error)
-        return self._converge_job(unit, attempt, job)
+        return self._converge_job(unit, attempt, job, plan)
 
     def _reconcile_existing_attempt(
         self,
@@ -139,14 +143,14 @@ class Reconciler:
                     )
                 except ExecutorError as error:
                     return self._handle_executor_error(unit, attempt, error)
-                return self._converge_job(unit, attempt, job)
+                return self._converge_job(unit, attempt, job, plan)
             return self._transition_unit(unit, ExecutionUnitStatus.UNKNOWN)
 
         if attempt.status is ExecutionAttemptStatus.PENDING:
             attempt = self._transition_attempt(attempt, ExecutionAttemptStatus.SUBMITTING)
 
         if attempt.status in TERMINAL_ATTEMPT_STATUSES:
-            return self._converge_terminal_attempt(unit, attempt)
+            return self._converge_terminal_attempt(unit, attempt, plan)
 
         try:
             job = self._executor.get(plan, attempt_number=attempt.attempt_number)
@@ -173,13 +177,14 @@ class Reconciler:
                     error_message="external execution object no longer exists",
                     retryable=True,
                 )
-        return self._converge_job(unit, attempt, job)
+        return self._converge_job(unit, attempt, job, plan)
 
     def _converge_job(
         self,
         unit: ExecutionUnitRecord,
         attempt: ExecutionAttemptRecord,
         job: ExternalJob,
+        plan: ExecutionPlan,
     ) -> ExecutionUnitRecord:
         if job.state is ExternalJobState.PENDING:
             if attempt.status is ExecutionAttemptStatus.UNKNOWN:
@@ -203,6 +208,10 @@ class Reconciler:
             return unit
 
         if job.state is ExternalJobState.SUCCEEDED:
+            try:
+                self._commit_artifacts(plan, attempt.attempt_number)
+            except ArtifactCommitError as error:
+                return self._handle_artifact_error(unit, attempt, plan, error)
             self._transition_attempt(
                 attempt,
                 ExecutionAttemptStatus.SUCCEEDED,
@@ -211,6 +220,7 @@ class Reconciler:
             return self._transition_unit(unit, ExecutionUnitStatus.SUCCEEDED)
 
         if job.state is ExternalJobState.CANCELLED:
+            self._abort_artifacts(plan, attempt.attempt_number)
             self._transition_attempt(
                 attempt,
                 ExecutionAttemptStatus.CANCELLED,
@@ -232,6 +242,7 @@ class Reconciler:
                 unit = self._transition_unit(unit, ExecutionUnitStatus.UNKNOWN)
             return unit
 
+        self._abort_artifacts(plan, attempt.attempt_number)
         attempt = self._transition_attempt(
             attempt,
             ExecutionAttemptStatus.FAILED,
@@ -245,11 +256,28 @@ class Reconciler:
         self,
         unit: ExecutionUnitRecord,
         attempt: ExecutionAttemptRecord,
+        plan: ExecutionPlan,
     ) -> ExecutionUnitRecord:
         if attempt.status is ExecutionAttemptStatus.SUCCEEDED:
+            try:
+                self._commit_artifacts(plan, attempt.attempt_number)
+            except ArtifactCommitError as error:
+                if error.retryable:
+                    return self._transition_unit(
+                        unit,
+                        ExecutionUnitStatus.UNKNOWN,
+                        payload={"error_code": error.error_code},
+                    )
+                return self._transition_unit(
+                    unit,
+                    ExecutionUnitStatus.FAILED,
+                    payload={"error_code": error.error_code},
+                )
             return self._transition_unit(unit, ExecutionUnitStatus.SUCCEEDED)
         if attempt.status is ExecutionAttemptStatus.CANCELLED:
+            self._abort_artifacts(plan, attempt.attempt_number)
             return self._transition_unit(unit, ExecutionUnitStatus.CANCELLED)
+        self._abort_artifacts(plan, attempt.attempt_number)
         job = ExternalJob(
             id=attempt.external_job_id or "failed",
             state=ExternalJobState.FAILED,
@@ -289,7 +317,7 @@ class Reconciler:
         error: ExecutorError,
     ) -> ExecutionUnitRecord:
         if error.retryable:
-            attempt = self._transition_attempt(
+            self._transition_attempt(
                 attempt,
                 ExecutionAttemptStatus.UNKNOWN,
                 error_code=error.error_code,
@@ -318,6 +346,42 @@ class Reconciler:
             return self._transition_unit(unit, ExecutionUnitStatus.RETRY_WAIT)
         return self._transition_unit(unit, ExecutionUnitStatus.FAILED)
 
+    def _handle_artifact_error(
+        self,
+        unit: ExecutionUnitRecord,
+        attempt: ExecutionAttemptRecord,
+        plan: ExecutionPlan,
+        error: ArtifactCommitError,
+    ) -> ExecutionUnitRecord:
+        if error.retryable:
+            if attempt.status is not ExecutionAttemptStatus.UNKNOWN:
+                self._transition_attempt(
+                    attempt,
+                    ExecutionAttemptStatus.UNKNOWN,
+                    error_code=error.error_code,
+                    error_message=str(error),
+                )
+            if unit.status is not ExecutionUnitStatus.UNKNOWN:
+                return self._transition_unit(
+                    unit,
+                    ExecutionUnitStatus.UNKNOWN,
+                    payload={"error_code": error.error_code},
+                )
+            return unit
+
+        self._abort_artifacts(plan, attempt.attempt_number)
+        self._transition_attempt(
+            attempt,
+            ExecutionAttemptStatus.FAILED,
+            error_code=error.error_code,
+            error_message=str(error),
+        )
+        return self._transition_unit(
+            unit,
+            ExecutionUnitStatus.FAILED,
+            payload={"error_code": error.error_code},
+        )
+
     def _cancel_unit(
         self,
         unit: ExecutionUnitRecord,
@@ -340,11 +404,32 @@ class Reconciler:
                         return self._transition_unit(unit, ExecutionUnitStatus.UNKNOWN)
                     return unit
                 raise
+            self._abort_artifacts(plan, attempt.attempt_number)
             self._transition_attempt(attempt, ExecutionAttemptStatus.CANCELLED)
         return self._transition_unit(
             unit,
             ExecutionUnitStatus.CANCELLED,
             payload={"reason": "RUN_CANCELLED"},
+        )
+
+    def _commit_artifacts(self, plan: ExecutionPlan, attempt_number: int) -> None:
+        if not plan.output_artifacts:
+            return
+        if self._artifact_manager is None:
+            raise ArtifactCommitError(
+                "durable artifact outputs require an ArtifactManager",
+                error_code="ARTIFACT_MANAGER_NOT_CONFIGURED",
+                retryable=False,
+            )
+        self._artifact_manager.commit_outputs(plan, attempt_number=attempt_number)
+
+    def _abort_artifacts(self, plan: ExecutionPlan, attempt_number: int) -> None:
+        if not plan.output_artifacts or self._artifact_manager is None:
+            return
+        self._artifact_manager.abort_outputs(
+            plan,
+            attempt_number=attempt_number,
+            best_effort=True,
         )
 
     def _transition_unit(

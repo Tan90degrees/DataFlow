@@ -165,11 +165,13 @@ def render_rayjob(
         pod_spec["serviceAccountName"] = plan.runtime.service_account
 
     plan_json = json.dumps(plan.model_dump(mode="json"), separators=(",", ":"))
-    runtime_env_yaml = (
-        "env_vars:\n  DATAFLOW_EXECUTION_PLAN: '"
-        + plan_json.replace("'", "''")
-        + "'\n"
-    )
+    env_lines = [
+        "env_vars:",
+        "  DATAFLOW_EXECUTION_PLAN: '" + plan_json.replace("'", "''") + "'",
+    ]
+    if attempt_number is not None:
+        env_lines.append(f"  DATAFLOW_ATTEMPT_NUMBER: '{attempt_number}'")
+    runtime_env_yaml = "\n".join(env_lines) + "\n"
 
     return {
         "apiVersion": f"{RAY_GROUP}/{RAY_VERSION}",

@@ -9,6 +9,14 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from dataflow.artifacts import (
+    ArtifactDurability,
+    ArtifactFormat,
+    ArtifactOutputSpec,
+    ArtifactRef,
+    committed_artifact_uri,
+    staging_artifact_uri_template,
+)
 from dataflow.contracts import ExecutionPlan, OperatorKind, OperatorSpec, ResourceSpec, RuntimeSpec
 
 
@@ -21,6 +29,7 @@ class ExecutionBoundary(StrEnum):
     NONE = "none"
     SOFT = "soft"
     HARD = "hard"
+    CHECKPOINT = "checkpoint"
 
 
 class PipelineNodeSpec(BaseModel):
@@ -78,6 +87,8 @@ class PipelineSpec(BaseModel):
             if key in seen_edges:
                 raise ValueError(f"duplicate edge: {edge.from_node} -> {edge.to_node}")
             seen_edges.add(key)
+            if edge.kind is EdgeKind.CONTROL and edge.boundary is ExecutionBoundary.CHECKPOINT:
+                raise ValueError("checkpoint boundaries are only valid on data edges")
         return self
 
 
@@ -182,8 +193,8 @@ class PipelineCompiler:
                 unit_nodes[unit_id] = [node_id]
 
         dependencies: dict[str, set[str]] = defaultdict(set)
-        incoming_data_units: dict[str, list[str]] = defaultdict(list)
-        outgoing_data_units: dict[str, list[str]] = defaultdict(list)
+        incoming_data_edges: dict[str, list[PipelineEdgeSpec]] = defaultdict(list)
+        outgoing_data_edges: dict[str, list[PipelineEdgeSpec]] = defaultdict(list)
         for edge in spec.edges:
             source_unit = unit_for_node[edge.from_node]
             target_unit = unit_for_node[edge.to_node]
@@ -191,10 +202,13 @@ class PipelineCompiler:
                 continue
             dependencies[target_unit].add(source_unit)
             if edge.kind is EdgeKind.DATA:
-                incoming_data_units[target_unit].append(source_unit)
-                outgoing_data_units[source_unit].append(target_unit)
+                incoming_data_edges[target_unit].append(edge)
+                outgoing_data_edges[source_unit].append(edge)
 
-        if any(len(set(sources)) > 1 for sources in incoming_data_units.values()):
+        if any(
+            len({unit_for_node[edge.from_node] for edge in edges}) > 1
+            for edges in incoming_data_edges.values()
+        ):
             raise ValueError("v1alpha1 runtime does not support data fan-in across execution units")
 
         units: list[ExecutionUnit] = []
@@ -206,15 +220,28 @@ class PipelineCompiler:
             cluster_profile = first_node.cluster_profile or spec.cluster_profile
 
             operators: list[OperatorSpec] = []
-            upstream_units = sorted(set(incoming_data_units[unit_id]))
-            if upstream_units:
-                upstream_unit = upstream_units[0]
-                path = self._artifact_uri(spec, run_id, upstream_unit)
+            input_artifacts: list[ArtifactRef] = []
+            input_edges = incoming_data_edges[unit_id]
+            if input_edges:
+                source_nodes = {edge.from_node for edge in input_edges}
+                if len(source_nodes) != 1:
+                    raise ValueError(
+                        "v1alpha1 execution unit cannot consume multiple durable artifacts"
+                    )
+                source_node = next(iter(source_nodes))
+                committed_uri = self._committed_artifact_uri(spec, run_id, source_node)
+                input_ref = ArtifactRef(
+                    run_id=run_id,
+                    node_id=source_node,
+                    format=ArtifactFormat.PARQUET,
+                    uri=committed_uri,
+                )
+                input_artifacts.append(input_ref)
                 operators.append(
                     OperatorSpec(
-                        id=f"__dataflow_read_{upstream_unit}",
+                        id=f"__dataflow_read_{source_node}",
                         kind=OperatorKind.READ_PARQUET,
-                        config={"path": path},
+                        config={"path": committed_uri},
                     )
                 )
 
@@ -229,13 +256,44 @@ class PipelineCompiler:
                     )
                 )
 
-            if outgoing_data_units[unit_id]:
-                path = self._artifact_uri(spec, run_id, unit_id)
+            output_artifacts: list[ArtifactOutputSpec] = []
+            output_edges = outgoing_data_edges[unit_id]
+            if output_edges:
+                source_nodes = {edge.from_node for edge in output_edges}
+                if len(source_nodes) != 1:
+                    raise ValueError(
+                        "v1alpha1 execution unit cannot publish multiple durable artifacts"
+                    )
+                source_node = next(iter(source_nodes))
+                operator_id = f"__dataflow_write_{source_node}"
                 operators.append(
                     OperatorSpec(
-                        id=f"__dataflow_write_{unit_id}",
+                        id=operator_id,
                         kind=OperatorKind.WRITE_PARQUET,
-                        config={"path": path},
+                        config={},
+                    )
+                )
+                output_artifacts.append(
+                    ArtifactOutputSpec(
+                        run_id=run_id,
+                        node_id=source_node,
+                        operator_id=operator_id,
+                        format=ArtifactFormat.PARQUET,
+                        durability=ArtifactDurability.DURABLE,
+                        committed_uri=self._committed_artifact_uri(
+                            spec,
+                            run_id,
+                            source_node,
+                        ),
+                        staging_uri_template=self._staging_artifact_uri_template(
+                            spec,
+                            run_id,
+                            source_node,
+                        ),
+                        checkpoint=any(
+                            edge.boundary is ExecutionBoundary.CHECKPOINT
+                            for edge in output_edges
+                        ),
                     )
                 )
 
@@ -250,6 +308,8 @@ class PipelineCompiler:
                         unit_id=unit_id,
                         operators=operators,
                         runtime=runtime,
+                        input_artifacts=input_artifacts,
+                        output_artifacts=output_artifacts,
                     ),
                 )
             )
@@ -263,7 +323,10 @@ class PipelineCompiler:
         target_id: str,
         edge: PipelineEdgeSpec,
     ) -> bool:
-        if edge.kind is not EdgeKind.DATA or edge.boundary is ExecutionBoundary.HARD:
+        if edge.kind is not EdgeKind.DATA or edge.boundary in {
+            ExecutionBoundary.HARD,
+            ExecutionBoundary.CHECKPOINT,
+        }:
             return False
         if len(graph.data_outgoing(source_id)) != 1 or len(graph.data_incoming(target_id)) != 1:
             return False
@@ -276,12 +339,26 @@ class PipelineCompiler:
         target_cluster = target.cluster_profile or graph.spec.cluster_profile
         return source_runtime == target_runtime and source_cluster == target_cluster
 
-    def _artifact_uri(self, spec: PipelineSpec, run_id: str, unit_id: str) -> str:
+    def _committed_artifact_uri(self, spec: PipelineSpec, run_id: str, node_id: str) -> str:
+        base_uri = self._require_artifact_base_uri(spec)
+        return committed_artifact_uri(base_uri, run_id, node_id)
+
+    def _staging_artifact_uri_template(
+        self,
+        spec: PipelineSpec,
+        run_id: str,
+        node_id: str,
+    ) -> str:
+        base_uri = self._require_artifact_base_uri(spec)
+        return staging_artifact_uri_template(base_uri, run_id, node_id)
+
+    @staticmethod
+    def _require_artifact_base_uri(spec: PipelineSpec) -> str:
         if not spec.artifact_base_uri:
             raise ValueError(
                 "artifact_base_uri is required when data crosses execution-unit boundaries"
             )
-        return f"{spec.artifact_base_uri.rstrip('/')}/{run_id}/{unit_id}"
+        return spec.artifact_base_uri
 
     def _validate_supported_data_topology(self, graph: LogicalGraph) -> None:
         for node_id in graph.topological_order:
