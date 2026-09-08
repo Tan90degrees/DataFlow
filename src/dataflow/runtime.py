@@ -6,6 +6,7 @@ import importlib
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from dataflow.artifacts import ArtifactOutputSpec
 from dataflow.contracts import ExecutionPlan, OperatorKind, OperatorSpec
 
 
@@ -31,12 +32,25 @@ class PlanExecutor:
     def __init__(self, backend: RayDataBackend) -> None:
         self._backend = backend
 
-    def execute(self, plan: ExecutionPlan) -> None:
+    def execute(self, plan: ExecutionPlan, *, attempt_number: int | None = None) -> None:
         dataset: DatasetLike | None = None
+        artifact_outputs = {output.operator_id: output for output in plan.output_artifacts}
         for operator in plan.operators:
-            dataset = self._apply(dataset, operator)
+            dataset = self._apply(
+                dataset,
+                operator,
+                artifact_output=artifact_outputs.get(operator.id),
+                attempt_number=attempt_number,
+            )
 
-    def _apply(self, dataset: DatasetLike | None, operator: OperatorSpec) -> DatasetLike | None:
+    def _apply(
+        self,
+        dataset: DatasetLike | None,
+        operator: OperatorSpec,
+        *,
+        artifact_output: ArtifactOutputSpec | None = None,
+        attempt_number: int | None = None,
+    ) -> DatasetLike | None:
         config = dict(operator.config)
 
         if operator.kind is OperatorKind.READ_PARQUET:
@@ -60,7 +74,15 @@ class PlanExecutor:
             return dataset.filter(resolve_symbol(callable_path), **config)
 
         if operator.kind is OperatorKind.WRITE_PARQUET:
-            path = _pop_required(config, "path", operator)
+            if artifact_output is not None:
+                if attempt_number is None:
+                    raise RuntimeError(
+                        f"durable artifact operator {operator.id!r} requires an attempt number"
+                    )
+                config.pop("path", None)
+                path = artifact_output.staging_uri(attempt_number)
+            else:
+                path = _pop_required(config, "path", operator)
             dataset.write_parquet(path, **config)
             return dataset
 
@@ -74,12 +96,12 @@ def _pop_required(config: dict[str, Any], key: str, operator: OperatorSpec) -> A
         raise ValueError(f"operator {operator.id!r} requires config.{key}") from exc
 
 
-def execute_with_ray(plan: ExecutionPlan) -> None:
+def execute_with_ray(plan: ExecutionPlan, *, attempt_number: int | None = None) -> None:
     import ray
     import ray.data
 
     ray.init(address=plan.runtime.ray_address, namespace=plan.runtime.namespace)
     try:
-        PlanExecutor(ray.data).execute(plan)
+        PlanExecutor(ray.data).execute(plan, attempt_number=attempt_number)
     finally:
         ray.shutdown()
