@@ -5,7 +5,6 @@ import pytest
 from dataflow import compiler
 from dataflow.contracts import OperatorKind, RuntimeSpec
 
-
 RUNTIME = RuntimeSpec(image="ghcr.io/example/dataflow:dev")
 
 
