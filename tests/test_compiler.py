@@ -98,7 +98,7 @@ def test_hard_boundary_materializes_between_execution_units() -> None:
     )
 
 
-def test_runtime_change_is_a_hard_physical_boundary() -> None:
+def test_runtime_override_is_node_scoped_and_creates_boundaries() -> None:
     spec = _linear_spec()
     spec.nodes[2].runtime = RuntimeSpec(image="ghcr.io/example/dataflow:other")
 
@@ -106,9 +106,11 @@ def test_runtime_change_is_a_hard_physical_boundary() -> None:
 
     assert [unit.node_ids for unit in graph.units] == [
         ["read", "map"],
-        ["filter", "write"],
+        ["filter"],
+        ["write"],
     ]
     assert graph.units[1].plan.runtime.image == "ghcr.io/example/dataflow:other"
+    assert graph.units[2].plan.runtime.image == RUNTIME.image
 
 
 def test_data_fan_out_materializes_once_and_reuses_upstream_artifact() -> None:
