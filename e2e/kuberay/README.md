@@ -65,7 +65,7 @@ Build and load the DataFlow images:
 docker build -t dataflow-runtime:e2e -f Dockerfile .
 docker build -t dataflow-control-plane:e2e -f Dockerfile.control-plane .
 kind load docker-image --name dataflow-e2e dataflow-runtime:e2e
-a kind load docker-image --name dataflow-e2e dataflow-control-plane:e2e
+kind load docker-image --name dataflow-e2e dataflow-control-plane:e2e
 ```
 
 Run the suite:
