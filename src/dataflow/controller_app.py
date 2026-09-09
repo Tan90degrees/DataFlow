@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 import os
+from collections.abc import Sequence
 
 from dataflow.api_repository import PostgresApiRepository
 from dataflow.artifact_manager import ArtifactManager
@@ -58,11 +60,25 @@ def create_controller_from_env() -> OrchestrationController:
     )
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Run the DataFlow orchestration controller")
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="perform one durable reconciliation pass and exit",
+    )
+    args = parser.parse_args(argv)
+
     if os.environ.get("DATAFLOW_JSON_LOGS", "true").lower() not in {"0", "false", "no"}:
         configure_json_logging()
+
+    controller = create_controller_from_env()
+    if args.once:
+        controller.reconcile_once()
+        return
+
     poll_seconds = float(os.environ.get("DATAFLOW_CONTROLLER_POLL_SECONDS", "2"))
-    create_controller_from_env().run_forever(poll_interval_seconds=poll_seconds)
+    controller.run_forever(poll_interval_seconds=poll_seconds)
 
 
 __all__ = ["create_controller_from_env", "main"]
