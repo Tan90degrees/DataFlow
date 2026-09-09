@@ -7,7 +7,12 @@ from uuid import UUID
 
 import psycopg
 
-from dataflow.artifact_repository import ArtifactRecord, PostgresArtifactRepository
+from dataflow.artifact_repository import ArtifactRecord
+from dataflow.cluster_profile_repository import (
+    ClusterProfileVersionRecord,
+    PostgresClusterProfileRepository,
+)
+from dataflow.cluster_profiles import ClusterProfileSpec
 from dataflow.metadata.repository import (
     EventRecord,
     ExecutionAttemptRecord,
@@ -73,8 +78,22 @@ class ApiRepository(Protocol):
 
     def list_run_artifacts(self, run_id: UUID) -> list[ArtifactRecord]: ...
 
+    def create_cluster_profile(self, spec: ClusterProfileSpec) -> ClusterProfileVersionRecord: ...
 
-class PostgresApiRepository(PostgresArtifactRepository):
+    def create_cluster_profile_revision(
+        self,
+        name: str,
+        spec: ClusterProfileSpec,
+    ) -> ClusterProfileVersionRecord: ...
+
+    def get_current_cluster_profile(self, name: str) -> ClusterProfileVersionRecord: ...
+
+    def list_cluster_profile_versions(self, name: str) -> list[ClusterProfileVersionRecord]: ...
+
+    def list_current_cluster_profiles(self) -> list[ClusterProfileVersionRecord]: ...
+
+
+class PostgresApiRepository(PostgresClusterProfileRepository):
     """Control-plane repository including API-oriented lookup methods."""
 
     def ping(self) -> bool:
