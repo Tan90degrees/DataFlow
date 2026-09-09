@@ -9,12 +9,14 @@ DataFlow owns workflow state, DAG compilation, retries, artifacts, and lifecycle
 The execution path is now:
 
 ```text
-HTTP API / SDK
-      ↓
+Python SDK / HTTP API
+        ↓
 PipelineSpec -> LogicalGraph -> ExecutionGraph -> Durable State
              -> Scheduler/Reconciler -> ExecutionPlan -> Ray Data -> KubeRay RayJob
                                       -> Durable Artifact -> downstream ExecutionPlan
 ```
+
+The Python SDK is deliberately a specification generator and API client. Building a pipeline never initializes Ray. Python callables are stored only as reproducibly importable `module.symbol` references, so persisted versions remain JSON, diffable, inspectable, and executable from immutable runtime images.
 
 The compiler groups compatible linear data operators into execution islands instead of creating one RayJob per DAG node. Hard boundaries, explicit checkpoint boundaries, runtime changes, cluster-profile changes, and data fan-out materialize through durable Parquet artifacts.
 
@@ -31,12 +33,13 @@ Durable outputs use two-phase publication. Ray Data writes to an attempt-specifi
 ## Repository layout
 
 ```text
+src/dataflow/sdk/                Python authoring DSL and HTTP API client
 src/dataflow/api*.py             HTTP application, service layer, and API repository
 src/dataflow/                    Core contracts, compiler, scheduler, reconciler, runtime, and KubeRay adapter
 src/dataflow/artifacts.py        Artifact contracts and S3-compatible publication backend
 src/dataflow/artifact_*.py       Durable artifact manager and PostgreSQL registry
 src/dataflow/metadata/           PostgreSQL repository and packaged migrations
-examples/                        Pipeline and execution-plan examples
+examples/                        Pipeline, execution-plan, and SDK examples
 tests/                           Unit and PostgreSQL integration tests
 docs/                            Architecture decisions
 ```
@@ -58,6 +61,60 @@ PostgreSQL metadata and control-plane integration tests run when `DATAFLOW_TEST_
 ```bash
 dataflow-migrate --dsn postgresql://postgres:postgres@localhost:5432/dataflow
 ```
+
+### Python SDK
+
+Install the SDK client dependency:
+
+```bash
+pip install -e '.[sdk]'
+```
+
+Author a pipeline with the same core `PipelineSpec` used by the API and compiler:
+
+```python
+from dataflow.sdk import DataFlowClient, Resources, pipeline
+
+
+def preprocess(batch):
+    return batch
+
+
+class Predictor:
+    def __call__(self, batch):
+        return batch
+
+
+@pipeline(
+    name="image-inference",
+    runtime_image="registry.example.com/dataflow-runtime:sha-abc123",
+    cluster_profile="gpu-medium",
+    artifact_base_uri="s3://my-bucket/dataflow",
+)
+def image_pipeline(flow, input_path: str, output_path: str):
+    dataset = flow.read_parquet(input_path)
+    dataset = dataset.map_batches(
+        preprocess,
+        resources=Resources(cpu=2),
+        batch_size=128,
+    )
+    dataset = dataset.checkpoint().map_batches(
+        Predictor,
+        resources=Resources(cpu=2, gpu=1),
+    )
+    dataset.write_parquet(output_path)
+
+
+spec = image_pipeline.spec("s3://my-bucket/input", "s3://my-bucket/output")
+
+with DataFlowClient("http://dataflow-api:8080") as client:
+    submission = client.submit(spec, parameters={"request_id": "demo"})
+    print(submission.run["id"])
+```
+
+`@pipeline` executes only the graph-building function locally. It never calls Ray or reads the input dataset. Functions and callable classes referenced by `map_batches`/`filter` must be top-level symbols in importable modules available inside the runtime image. Lambdas, nested/local functions, `__main__` symbols, and arbitrary callable instances are rejected instead of being pickled into pipeline metadata.
+
+See `examples/sdk_pipeline.py` for a complete example.
 
 ### HTTP API
 
@@ -169,7 +226,7 @@ Push that image to a registry reachable by the Kubernetes cluster and set `runti
 - [x] Idempotent Kubernetes/KubeRay reconciler
 - [x] Durable artifacts/checkpoints
 - [x] HTTP control-plane API
-- [ ] Python SDK
+- [x] Python SDK
 - [ ] ClusterProfile/resource policy
 - [ ] Control-plane observability
 - [ ] Real KubeRay end-to-end suite
