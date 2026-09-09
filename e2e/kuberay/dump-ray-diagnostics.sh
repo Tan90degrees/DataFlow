@@ -18,8 +18,15 @@ kubectl get rayjobs -n "$NAMESPACE" -o json 2>/dev/null | jq -r '
   if (.items | length) == 0 then
     "(no RayJobs)"
   else
-    .items[] |
-    "rayjob/\(.metadata.name) status=\(.status.jobStatus // \"<none>\") deployment=\(.status.jobDeploymentStatus // \"<none>\") cluster=\(.status.rayClusterName // \"<none>\") message=\(.status.message // \"\")"
+    .items[]
+    | [
+        "rayjob/" + .metadata.name,
+        "status=" + (.status.jobStatus // "<none>"),
+        "deployment=" + (.status.jobDeploymentStatus // "<none>"),
+        "cluster=" + (.status.rayClusterName // "<none>"),
+        "message=" + (.status.message // "")
+      ]
+    | join(" ")
   end
 ' | tee -a "$SUMMARY" || true
 
@@ -54,10 +61,11 @@ kubectl get pods -n "$NAMESPACE" -o json 2>/dev/null | jq -r '
     ] | join(" ")
 ' | tee -a "$SUMMARY" || true
 
-# Keep the full Kubernetes state out of the console log so GitHub does not
-# truncate away the process termination reason we actually need.
+# Keep full Kubernetes state in the artifact so the console remains compact.
 kubectl get pods,jobs,rayjobs,rayclusters -n "$NAMESPACE" -o wide \
   >"$OUT_DIR/resources-wide.txt" 2>&1 || true
+kubectl get events -n "$NAMESPACE" --sort-by=.lastTimestamp \
+  >"$OUT_DIR/events.txt" 2>&1 || true
 kubectl get rayjobs -n "$NAMESPACE" -o yaml \
   >"$OUT_DIR/rayjobs.yaml" 2>&1 || true
 kubectl get rayclusters -n "$NAMESPACE" -o yaml \
