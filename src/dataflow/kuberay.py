@@ -222,6 +222,8 @@ def _render_profile_cluster(
         placement=profile.head.placement,
         service_account=profile.service_account,
         priority_class_name=profile.priority_class_name,
+        pod_env=profile.pod_env,
+        secret_env_from=profile.secret_env_from,
     )
     workers: list[dict[str, Any]] = []
     for group in profile.worker_groups:
@@ -241,6 +243,8 @@ def _render_profile_cluster(
             placement=group.placement,
             service_account=profile.service_account,
             priority_class_name=profile.priority_class_name,
+            pod_env=profile.pod_env,
+            secret_env_from=profile.secret_env_from,
         )
         worker: dict[str, Any] = {
             "groupName": group.name,
@@ -287,15 +291,25 @@ def _profile_pod_spec(
     placement: PlacementSpec,
     service_account: str | None,
     priority_class_name: str | None,
+    pod_env: dict[str, str],
+    secret_env_from: list[str],
 ) -> dict[str, Any]:
+    container: dict[str, Any] = {
+        "name": container_name,
+        "image": image,
+        "resources": resources,
+    }
+    if pod_env:
+        container["env"] = [
+            {"name": name, "value": value} for name, value in sorted(pod_env.items())
+        ]
+    if secret_env_from:
+        container["envFrom"] = [
+            {"secretRef": {"name": name}} for name in sorted(secret_env_from)
+        ]
+
     pod: dict[str, Any] = {
-        "containers": [
-            {
-                "name": container_name,
-                "image": image,
-                "resources": resources,
-            }
-        ],
+        "containers": [container],
         **placement_fields(
             placement,
             priority_class_name=priority_class_name,
