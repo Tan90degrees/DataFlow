@@ -44,6 +44,7 @@ dataflow-render-rayjob = "dataflow.cli:render_rayjob"
 dataflow-compile = "dataflow.cli:compile_pipeline_cli"
 dataflow-migrate = "dataflow.metadata.migrations:main"
 dataflow-api = "dataflow.api:main"
+dataflow-controller = "dataflow.controller_app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dataflow"]
