@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import heapq
 from collections import defaultdict
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Literal
 
@@ -17,6 +18,7 @@ from dataflow.artifacts import (
     committed_artifact_uri,
     staging_artifact_uri_template,
 )
+from dataflow.cluster_profiles import ClusterProfileSnapshot
 from dataflow.contracts import ExecutionPlan, OperatorKind, OperatorSpec, ResourceSpec, RuntimeSpec
 
 
@@ -166,9 +168,16 @@ class LogicalGraph:
 class PipelineCompiler:
     """Compile a PipelineSpec into deterministic linear Ray Data execution islands."""
 
-    def compile(self, spec: PipelineSpec, *, run_id: str) -> ExecutionGraph:
+    def compile(
+        self,
+        spec: PipelineSpec,
+        *,
+        run_id: str,
+        cluster_profiles: Mapping[str, ClusterProfileSnapshot] | None = None,
+    ) -> ExecutionGraph:
         graph = LogicalGraph(spec)
         self._validate_supported_data_topology(graph)
+        self._validate_profile_requests(graph, cluster_profiles)
 
         unit_for_node: dict[str, str] = {}
         unit_nodes: dict[str, list[str]] = {}
@@ -218,6 +227,11 @@ class PipelineCompiler:
             first_node = graph.nodes[node_ids[0]]
             runtime = first_node.runtime or spec.runtime
             cluster_profile = first_node.cluster_profile or spec.cluster_profile
+            profile_snapshot = (
+                cluster_profiles.get(cluster_profile) if cluster_profiles is not None else None
+            )
+            if cluster_profiles is not None and profile_snapshot is None:
+                raise ValueError(f"ClusterProfile {cluster_profile!r} was not resolved")
 
             operators: list[OperatorSpec] = []
             input_artifacts: list[ArtifactRef] = []
@@ -308,6 +322,7 @@ class PipelineCompiler:
                         unit_id=unit_id,
                         operators=operators,
                         runtime=runtime,
+                        cluster_profile=profile_snapshot,
                         input_artifacts=input_artifacts,
                         output_artifacts=output_artifacts,
                     ),
@@ -339,6 +354,21 @@ class PipelineCompiler:
         target_cluster = target.cluster_profile or graph.spec.cluster_profile
         return source_runtime == target_runtime and source_cluster == target_cluster
 
+    def _validate_profile_requests(
+        self,
+        graph: LogicalGraph,
+        cluster_profiles: Mapping[str, ClusterProfileSnapshot] | None,
+    ) -> None:
+        if cluster_profiles is None:
+            return
+        for node_id in graph.topological_order:
+            node = graph.nodes[node_id]
+            name = node.cluster_profile or graph.spec.cluster_profile
+            snapshot = cluster_profiles.get(name)
+            if snapshot is None:
+                raise ValueError(f"ClusterProfile {name!r} was not resolved")
+            snapshot.spec.validate_request(node.resources, node_id=node.id)
+
     def _committed_artifact_uri(self, spec: PipelineSpec, run_id: str, node_id: str) -> str:
         base_uri = self._require_artifact_base_uri(spec)
         return committed_artifact_uri(base_uri, run_id, node_id)
@@ -368,5 +398,14 @@ class PipelineCompiler:
                 )
 
 
-def compile_pipeline(spec: PipelineSpec, *, run_id: str) -> ExecutionGraph:
-    return PipelineCompiler().compile(spec, run_id=run_id)
+def compile_pipeline(
+    spec: PipelineSpec,
+    *,
+    run_id: str,
+    cluster_profiles: Mapping[str, ClusterProfileSnapshot] | None = None,
+) -> ExecutionGraph:
+    return PipelineCompiler().compile(
+        spec,
+        run_id=run_id,
+        cluster_profiles=cluster_profiles,
+    )
