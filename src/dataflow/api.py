@@ -9,6 +9,7 @@ from uuid import UUID
 
 import psycopg
 from fastapi import FastAPI, Query, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -273,15 +274,15 @@ def create_app(service: ControlPlaneService) -> FastAPI:
             422,
             "VALIDATION_ERROR",
             "request validation failed",
-            details=error.errors(),
+            details=jsonable_encoder(error.errors()),
         )
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/readyz")
-    def readyz() -> dict[str, str] | JSONResponse:
+    @app.get("/readyz", response_model=None)
+    def readyz() -> Any:
         if not service.ready():
             return _error_response(503, "NOT_READY", "PostgreSQL is unavailable")
         return {"status": "ready"}
