@@ -94,8 +94,9 @@ def _apply_worker_resources(config: dict[str, Any], resources: ResourceSpec) -> 
     if resources.memory_bytes is not None:
         config.setdefault("memory", resources.memory_bytes)
     if resources.accelerator_type is not None:
-        # Ray Data forwards this remote option to Ray Core scheduling.
-        config.setdefault("accelerator_type", resources.accelerator_type)
+        selector = dict(config.get("label_selector") or {})
+        selector.setdefault("ray.io/accelerator-type", resources.accelerator_type)
+        config["label_selector"] = selector
 
 
 def _pop_required(config: dict[str, Any], key: str, operator: OperatorSpec) -> Any:
