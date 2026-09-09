@@ -9,6 +9,8 @@ DataFlow owns workflow state, DAG compilation, retries, artifacts, and lifecycle
 The execution path is now:
 
 ```text
+HTTP API / SDK
+      ↓
 PipelineSpec -> LogicalGraph -> ExecutionGraph -> Durable State
              -> Scheduler/Reconciler -> ExecutionPlan -> Ray Data -> KubeRay RayJob
                                       -> Durable Artifact -> downstream ExecutionPlan
@@ -20,6 +22,8 @@ Inside one execution island, Ray Dataset blocks remain transient and are never p
 
 PostgreSQL is the durable orchestration source of truth. Pipeline versions are immutable, execution attempts are append-only, artifact rows are append-only after terminal publication, and run/unit/attempt state transitions append an event in the same transaction. Ray and Kubernetes status are external observed state that the reconciler converges against durable desired state.
 
+The HTTP API is also a durable-state adapter: request handlers create pipeline metadata, immutable versions and compiled runs, but they do not submit RayJobs directly. This keeps API availability independent from transient Kubernetes failures. A separately deployed controller/reconciler converges RUNNING and CANCELLED desired state against KubeRay.
+
 The scheduler uses `all_success` dependency semantics: a PENDING execution unit becomes READY only after every upstream unit succeeds. The reconciler submits READY units through an `Executor` interface, tracks attempt-specific external jobs, retries recoverable failures as new attempts with backoff, and propagates cancellation without creating new downstream work. KubeRay RayJob names are deterministic per run, unit, and attempt so repeated reconcile calls and controller restarts converge on the same Kubernetes object.
 
 Durable outputs use two-phase publication. Ray Data writes to an attempt-specific S3 staging prefix. After the RayJob succeeds, the control plane publishes that staging data to the stable `(run_id, node_id)` committed URI, writes an object-store commit marker, and transitions the PostgreSQL artifact row from `STAGING` to `COMMITTED`. Failed or cancelled attempts are marked `ABORTED` and never become downstream-visible outputs. A transient publication failure moves the unit to `UNKNOWN` and retries publication of the already-successful RayJob instead of rerunning the computation.
@@ -27,6 +31,7 @@ Durable outputs use two-phase publication. Ray Data writes to an attempt-specifi
 ## Repository layout
 
 ```text
+src/dataflow/api*.py             HTTP application, service layer, and API repository
 src/dataflow/                    Core contracts, compiler, scheduler, reconciler, runtime, and KubeRay adapter
 src/dataflow/artifacts.py        Artifact contracts and S3-compatible publication backend
 src/dataflow/artifact_*.py       Durable artifact manager and PostgreSQL registry
@@ -53,6 +58,41 @@ PostgreSQL metadata and control-plane integration tests run when `DATAFLOW_TEST_
 ```bash
 dataflow-migrate --dsn postgresql://postgres:postgres@localhost:5432/dataflow
 ```
+
+### HTTP API
+
+Install the API server extra:
+
+```bash
+pip install -e '.[api]'
+```
+
+Configure PostgreSQL and start the control-plane API:
+
+```bash
+export DATAFLOW_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/dataflow
+dataflow-api
+```
+
+The server listens on `0.0.0.0:8080` by default. Override with `DATAFLOW_API_HOST` and `DATAFLOW_API_PORT`.
+
+Current API surface:
+
+```text
+POST /v1/pipelines
+GET  /v1/pipelines
+GET  /v1/pipelines/{pipeline_id}
+POST /v1/pipelines/{pipeline_id}/versions
+POST /v1/pipeline-runs
+GET  /v1/pipeline-runs/{run_id}
+POST /v1/pipeline-runs/{run_id}/cancel
+GET  /v1/pipeline-runs/{run_id}/events
+GET  /v1/pipeline-runs/{run_id}/artifacts
+GET  /healthz
+GET  /readyz
+```
+
+Creating a run persists the compiled execution graph, advances the run through `CREATED -> QUEUED -> PLANNING -> RUNNING`, and evaluates readiness once. The API does not run the long-lived controller loop inside the web process.
 
 Ray is an optional runtime dependency for local unit tests. Install the runtime extras to execute real Ray Data plans:
 
@@ -128,3 +168,8 @@ Push that image to a registry reachable by the Kubernetes cluster and set `runti
 - [x] Scheduler
 - [x] Idempotent Kubernetes/KubeRay reconciler
 - [x] Durable artifacts/checkpoints
+- [x] HTTP control-plane API
+- [ ] Python SDK
+- [ ] ClusterProfile/resource policy
+- [ ] Control-plane observability
+- [ ] Real KubeRay end-to-end suite
