@@ -1,0 +1,75 @@
+{
+  "api_version": "dataflow.io/v1alpha1",
+  "kind": "Pipeline",
+  "name": "kuberay-e2e",
+  "runtime": {
+    "image": "dataflow-runtime:e2e",
+    "ray_address": "auto",
+    "namespace": "default"
+  },
+  "cluster_profile": "e2e-cpu",
+  "artifact_base_uri": "s3://dataflow-e2e/checkpoints",
+  "nodes": [
+    {
+      "id": "read",
+      "kind": "read_parquet",
+      "config": {
+        "path": "s3://dataflow-e2e/input/data.parquet"
+      },
+      "resources": {}
+    },
+    {
+      "id": "slow",
+      "kind": "map_batches",
+      "config": {
+        "callable": "dataflow.callables.slow_identity_batch",
+        "batch_size": 256,
+        "fn_kwargs": {
+          "seconds": 15
+        }
+      },
+      "resources": {
+        "cpu": 0.25
+      }
+    },
+    {
+      "id": "normalize",
+      "kind": "map_batches",
+      "config": {
+        "callable": "dataflow.callables.identity_batch",
+        "batch_size": 256
+      },
+      "resources": {
+        "cpu": 0.25
+      }
+    },
+    {
+      "id": "write",
+      "kind": "write_parquet",
+      "config": {
+        "path": "s3://dataflow-e2e/final-output"
+      },
+      "resources": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": "read",
+      "to": "slow",
+      "kind": "data",
+      "boundary": "none"
+    },
+    {
+      "from": "slow",
+      "to": "normalize",
+      "kind": "data",
+      "boundary": "checkpoint"
+    },
+    {
+      "from": "normalize",
+      "to": "write",
+      "kind": "data",
+      "boundary": "none"
+    }
+  ]
+}
