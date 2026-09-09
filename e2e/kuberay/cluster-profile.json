@@ -14,8 +14,8 @@
   ],
   "head": {
     "resources": {
-      "cpu": 0.5,
-      "memory_bytes": 1073741824,
+      "cpu": 1,
+      "memory_bytes": 2147483648,
       "gpu": 0
     },
     "placement": {
