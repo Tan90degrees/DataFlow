@@ -62,7 +62,7 @@ class PostgresClusterProfileRepository(PostgresArtifactRepository):
                 (version_id, profile_id, Jsonb(payload), digest),
             ).fetchone()
         assert row is not None
-        return self._version_from_row(row)
+        return self._cluster_profile_version_from_row(row)
 
     def create_cluster_profile_revision(
         self,
@@ -100,7 +100,7 @@ class PostgresClusterProfileRepository(PostgresArtifactRepository):
                 (uuid4(), profile["id"], revision, Jsonb(payload), digest),
             ).fetchone()
         assert row is not None
-        return self._version_from_row(row)
+        return self._cluster_profile_version_from_row(row)
 
     def get_cluster_profile(self, name: str) -> ClusterProfileRecord:
         with self._connect() as connection:
@@ -131,7 +131,7 @@ class PostgresClusterProfileRepository(PostgresArtifactRepository):
             ).fetchone()
         if row is None:
             raise MetadataNotFoundError(f"cluster profile not found: {name}")
-        return self._version_from_row(row)
+        return self._cluster_profile_version_from_row(row)
 
     def list_cluster_profile_versions(self, name: str) -> list[ClusterProfileVersionRecord]:
         profile = self.get_cluster_profile(name)
@@ -144,7 +144,7 @@ class PostgresClusterProfileRepository(PostgresArtifactRepository):
                 """,
                 (profile.id,),
             ).fetchall()
-        return [self._version_from_row(row) for row in rows]
+        return [self._cluster_profile_version_from_row(row) for row in rows]
 
     def list_current_cluster_profiles(self) -> list[ClusterProfileVersionRecord]:
         with self._connect() as connection:
@@ -156,10 +156,10 @@ class PostgresClusterProfileRepository(PostgresArtifactRepository):
                 ORDER BY p.name, v.revision DESC
                 """
             ).fetchall()
-        return [self._version_from_row(row) for row in rows]
+        return [self._cluster_profile_version_from_row(row) for row in rows]
 
     @staticmethod
-    def _version_from_row(row) -> ClusterProfileVersionRecord:
+    def _cluster_profile_version_from_row(row) -> ClusterProfileVersionRecord:
         return ClusterProfileVersionRecord(
             id=row["id"],
             cluster_profile_id=row["cluster_profile_id"],
