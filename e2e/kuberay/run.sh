@@ -26,6 +26,7 @@ cleanup() {
     log "dumping diagnostics after failure"
     kubectl get pods,jobs,rayjobs,rayclusters -A -o wide || true
     kubectl logs -n "$NAMESPACE" deployment/dataflow-controller --tail=250 || true
+    kubectl logs -n "$NAMESPACE" job/dataflow-controller-once --tail=250 || true
     kubectl logs -n "$NAMESPACE" deployment/dataflow-api --tail=150 || true
     kubectl logs -n kuberay-system deployment/kuberay-operator --tail=250 || true
     kubectl get rayjobs -n "$NAMESPACE" -o yaml || true
@@ -78,6 +79,84 @@ rayjob_count() {
     selector+=",dataflow.io/unit-id=$unit_id"
   fi
   kubectl get rayjobs -n "$NAMESPACE" -l "$selector" -o json | jq '.items | length'
+}
+
+wait_rayjob_succeeded() {
+  local job_name=$1
+  local timeout=${2:-600}
+  local deadline=$((SECONDS + timeout))
+  local body=""
+  while (( SECONDS < deadline )); do
+    body="$(kubectl get rayjob -n "$NAMESPACE" "$job_name" -o json 2>/dev/null || true)"
+    if [[ -n "$body" ]]; then
+      local job_status
+      local deployment_status
+      job_status="$(jq -r '.status.jobStatus // ""' <<<"$body")"
+      deployment_status="$(jq -r '.status.jobDeploymentStatus // ""' <<<"$body")"
+      if [[ "$job_status" == "SUCCEEDED" && "$deployment_status" == "Complete" ]]; then
+        return 0
+      fi
+      if [[ "$job_status" == "FAILED" || "$deployment_status" == "Failed" ]]; then
+        printf '%s\n' "$body" >&2
+        fail "RayJob $job_name failed while the durable controller was stopped"
+      fi
+    fi
+    sleep 1
+  done
+  printf '%s\n' "$body" >&2
+  fail "timed out waiting for RayJob $job_name to succeed"
+}
+
+run_controller_once() {
+  kubectl delete job -n "$NAMESPACE" dataflow-controller-once --ignore-not-found --wait=true
+  cat <<EOF | kubectl apply -f -
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dataflow-controller-once
+  namespace: $NAMESPACE
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: dataflow-controller-once
+    spec:
+      restartPolicy: Never
+      serviceAccountName: dataflow-controller
+      containers:
+        - name: controller
+          image: dataflow-control-plane:e2e
+          imagePullPolicy: IfNotPresent
+          command: ["dataflow-controller", "--once"]
+          envFrom:
+            - secretRef:
+                name: dataflow-s3
+          env:
+            - name: DATAFLOW_DATABASE_URL
+              value: postgresql://dataflow:dataflow@postgres:5432/dataflow
+            - name: DATAFLOW_S3_ENDPOINT_URL
+              value: http://minio:9000
+            - name: AWS_DEFAULT_REGION
+              value: us-east-1
+            - name: DATAFLOW_RETRY_MAX_ATTEMPTS
+              value: "3"
+            - name: DATAFLOW_RETRY_INITIAL_BACKOFF_SECONDS
+              value: "0"
+            - name: DATAFLOW_METRICS_ENABLED
+              value: "false"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+EOF
+  if ! kubectl wait -n "$NAMESPACE" --for=condition=complete job/dataflow-controller-once --timeout=180s; then
+    kubectl logs -n "$NAMESPACE" job/dataflow-controller-once --tail=300 || true
+    fail "one-shot controller reconciliation failed"
+  fi
+  kubectl logs -n "$NAMESPACE" job/dataflow-controller-once --tail=100 || true
 }
 
 assert_s3_outputs() {
@@ -188,27 +267,34 @@ if [[ "${DATAFLOW_E2E_WORKER_RESTART:-0}" == "1" ]]; then
   fi
 fi
 
-log "wait for committed checkpoint, then freeze controller before downstream submission"
-DIAG="$(wait_diag "$RUN_ID" '.units[0].unit.status == "SUCCEEDED" and .units[1].unit.status == "READY"' 'checkpoint committed and downstream READY' 600)"
+log "freeze the durable controller while attempt 2 is still active"
+kubectl scale -n "$NAMESPACE" deployment/dataflow-controller --replicas=0
+kubectl wait -n "$NAMESPACE" --for=delete pod -l app=dataflow-controller --timeout=120s
+[[ "$(rayjob_count "$RUN_ID" unit-002)" == "0" ]] || fail "downstream RayJob started before upstream success"
+
+log "let the real RayJob finish without the DataFlow controller"
+wait_rayjob_succeeded "$JOB2" 600
+[[ "$(rayjob_count "$RUN_ID" unit-002)" == "0" ]] || fail "downstream RayJob appeared while controller was stopped"
+
+log "run one durable reconciliation pass to commit the checkpoint and expose downstream READY"
+run_controller_once
+DIAG="$(wait_diag "$RUN_ID" '.units[0].unit.status == "SUCCEEDED" and .units[1].unit.status == "READY"' 'checkpoint committed and downstream READY' 120)"
 jq -e '.units[0].artifacts | any(.attempt_number == 2 and .state == "COMMITTED" and .checkpoint == true)' <<<"$DIAG" >/dev/null \
   || fail "attempt 2 checkpoint was not committed"
-
-kubectl scale -n "$NAMESPACE" deployment/dataflow-controller --replicas=0
-kubectl wait -n "$NAMESPACE" --for=delete pod -l app=dataflow-controller --timeout=120s || true
-[[ "$(rayjob_count "$RUN_ID" unit-002)" == "0" ]] || fail "downstream RayJob started before checkpoint recovery test"
+[[ "$(rayjob_count "$RUN_ID" unit-002)" == "0" ]] || fail "one-shot reconcile must not submit downstream work"
 
 UPSTREAM_CLUSTER="$(kubectl get rayjob -n "$NAMESPACE" "$JOB2" -o jsonpath='{.status.rayClusterName}' 2>/dev/null || true)"
+[[ -n "$UPSTREAM_CLUSTER" ]] || fail "upstream RayJob did not expose its RayCluster name"
+log "delete upstream RayJob/cluster after checkpoint publication"
 kubectl delete rayjob -n "$NAMESPACE" "$JOB2" --ignore-not-found --wait=true
-if [[ -n "$UPSTREAM_CLUSTER" ]]; then
-  for _ in $(seq 1 90); do
-    if ! kubectl get raycluster -n "$NAMESPACE" "$UPSTREAM_CLUSTER" >/dev/null 2>&1; then
-      break
-    fi
-    sleep 1
-  done
-  kubectl get raycluster -n "$NAMESPACE" "$UPSTREAM_CLUSTER" >/dev/null 2>&1 \
-    && fail "upstream RayCluster still exists after RayJob deletion"
-fi
+for _ in $(seq 1 90); do
+  if ! kubectl get raycluster -n "$NAMESPACE" "$UPSTREAM_CLUSTER" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+kubectl get raycluster -n "$NAMESPACE" "$UPSTREAM_CLUSTER" >/dev/null 2>&1 \
+  && fail "upstream RayCluster still exists after RayJob deletion"
 
 log "restart controller after upstream cluster is gone; downstream must read committed checkpoint"
 kubectl scale -n "$NAMESPACE" deployment/dataflow-controller --replicas=1
