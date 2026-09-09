@@ -29,6 +29,8 @@ def repository(postgres_dsn: str) -> Iterator[PostgresApiRepository]:
         connection.execute(
             """
             TRUNCATE TABLE
+                cluster_profile_versions,
+                cluster_profiles,
                 artifacts,
                 events,
                 node_runs,
@@ -54,7 +56,7 @@ def _pipeline_spec(name: str = "api-pipeline") -> dict:
         "kind": "Pipeline",
         "name": name,
         "runtime": {"image": "dataflow-runtime:test"},
-        "cluster_profile": "cpu-test",
+        "cluster_profile": "default",
         "artifact_base_uri": "s3://bucket/dataflow",
         "nodes": [
             {
