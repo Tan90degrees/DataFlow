@@ -23,7 +23,11 @@ def create_controller_from_env() -> OrchestrationController:
     repository = PostgresApiRepository(dsn)
     observability = Observability.from_env()
     endpoint_url = os.environ.get("DATAFLOW_S3_ENDPOINT_URL")
-    region_name = os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION") or "us-east-1"
+    region_name = (
+        os.environ.get("AWS_DEFAULT_REGION")
+        or os.environ.get("AWS_REGION")
+        or "us-east-1"
+    )
     client_kwargs: dict[str, str] = {"region_name": region_name}
     if endpoint_url:
         client_kwargs["endpoint_url"] = endpoint_url
