@@ -18,6 +18,8 @@ from dataflow.executor import ExecutorError, ExternalJob, ExternalJobState
 RAY_GROUP = "ray.io"
 RAY_VERSION = "v1"
 RAYJOB_PLURAL = "rayjobs"
+# KubeRay reserves characters for RayCluster/Job resources derived from the RayJob name.
+KUBERAY_RAYJOB_NAME_MAX_LENGTH = 47
 
 
 class RayJobClient(Protocol):
@@ -139,7 +141,7 @@ def rayjob_name(plan: ExecutionPlan, attempt_number: int) -> str:
         raise ValueError("attempt_number must be at least 1")
     suffix = f"-a{attempt_number:03d}"
     base = _dns_name(f"dataflow-{plan.run_id}-{plan.unit_id}", limit=None)
-    maximum = 63 - len(suffix)
+    maximum = KUBERAY_RAYJOB_NAME_MAX_LENGTH - len(suffix)
     if len(base) > maximum:
         digest = hashlib.sha1(base.encode("utf-8")).hexdigest()[:8]
         prefix_length = maximum - len(digest) - 1
@@ -153,7 +155,10 @@ def render_rayjob(
     attempt_number: int | None = None,
 ) -> dict[str, Any]:
     if attempt_number is None:
-        name = _dns_name(f"dataflow-{plan.run_id}-{plan.unit_id}")
+        name = _dns_name(
+            f"dataflow-{plan.run_id}-{plan.unit_id}",
+            limit=KUBERAY_RAYJOB_NAME_MAX_LENGTH,
+        )
     else:
         name = rayjob_name(plan, attempt_number)
 
@@ -365,13 +370,18 @@ def _external_job(resource: dict[str, Any]) -> ExternalJob:
     reason = status.get("reason")
     message = status.get("message") or status.get("jobStatusMessage")
     error_code = str(reason) if reason else None
-    if error_code is None and state is ExternalJobState.FAILED:
+    retryable: bool | None = None
+    if raw_status == "VALIDATIONFAILED":
+        error_code = "INVALID_PLAN"
+        retryable = False
+    elif error_code is None and state is ExternalJobState.FAILED:
         error_code = "RAY_JOB_FAILED"
     return ExternalJob(
         id=str(metadata.get("name", "")),
         state=state,
         error_code=error_code,
         error_message=str(message) if message is not None else None,
+        retryable=retryable,
     )
 
 
@@ -382,7 +392,7 @@ def _external_state(raw_status: str) -> ExternalJobState:
         return ExternalJobState.RUNNING
     if raw_status in {"SUCCEEDED", "SUCCESS", "COMPLETE", "COMPLETED"}:
         return ExternalJobState.SUCCEEDED
-    if raw_status in {"FAILED", "FAILURE"}:
+    if raw_status in {"FAILED", "FAILURE", "VALIDATIONFAILED"}:
         return ExternalJobState.FAILED
     if raw_status in {"STOPPED", "CANCELLED", "CANCELED"}:
         return ExternalJobState.CANCELLED
