@@ -24,6 +24,11 @@ def make_gpu_profile(*, namespace: str = "ml-v1") -> ClusterProfileSpec:
         service_account="dataflow-runner",
         priority_class_name="dataflow-high",
         queue="gpu-queue",
+        pod_env={
+            "AWS_DEFAULT_REGION": "us-east-1",
+            "DATAFLOW_S3_ENDPOINT_URL": "http://minio:9000",
+        },
+        secret_env_from=["dataflow-s3"],
         head=HeadGroupProfile(
             resources=NodeCapacity(cpu=1, memory_bytes=2 * 1024**3),
             placement=PlacementSpec(node_selector={"node-pool": "control"}),
@@ -83,6 +88,14 @@ def test_cluster_profile_validates_worker_capacity_and_accelerator() -> None:
         )
 
 
+def test_cluster_profile_rejects_duplicate_secret_sources() -> None:
+    profile = make_gpu_profile().model_dump(mode="json")
+    profile["secret_env_from"] = ["credentials", "credentials"]
+
+    with pytest.raises(ValueError, match="secret_env_from entries must be unique"):
+        ClusterProfileSpec.model_validate(profile)
+
+
 def test_runtime_uses_ray_label_selector_for_accelerator_type() -> None:
     plan = make_plan()
     plan.operators[1].resources.accelerator_type = "A100"
@@ -124,6 +137,12 @@ def test_kuberay_manifest_is_rendered_from_pinned_profile_snapshot() -> None:
     assert head_spec["serviceAccountName"] == "dataflow-runner"
     assert head_spec["priorityClassName"] == "dataflow-high"
     assert head_spec["nodeSelector"] == {"node-pool": "control"}
+    head_container = head_spec["containers"][0]
+    assert head_container["env"] == [
+        {"name": "AWS_DEFAULT_REGION", "value": "us-east-1"},
+        {"name": "DATAFLOW_S3_ENDPOINT_URL", "value": "http://minio:9000"},
+    ]
+    assert head_container["envFrom"] == [{"secretRef": {"name": "dataflow-s3"}}]
 
     worker = cluster["workerGroupSpecs"][0]
     assert worker["groupName"] == "a100-workers"
@@ -143,7 +162,10 @@ def test_kuberay_manifest_is_rendered_from_pinned_profile_snapshot() -> None:
             "effect": "NoSchedule",
         }
     ]
-    resources = worker_spec["containers"][0]["resources"]
+    worker_container = worker_spec["containers"][0]
+    assert worker_container["env"] == head_container["env"]
+    assert worker_container["envFrom"] == head_container["envFrom"]
+    resources = worker_container["resources"]
     assert resources["requests"]["cpu"] == "8"
     assert resources["requests"]["memory"] == str(32 * 1024**3)
     assert resources["requests"]["nvidia.com/gpu"] == "1"
