@@ -6,6 +6,12 @@ import hashlib
 import json
 from typing import Any, Protocol
 
+from dataflow.cluster_profiles import (
+    ClusterProfileSpec,
+    PlacementSpec,
+    placement_fields,
+    pod_resource_requirements,
+)
 from dataflow.contracts import ExecutionPlan
 from dataflow.executor import ExecutorError, ExternalJob, ExternalJobState
 
@@ -83,7 +89,7 @@ class KubeRayExecutor:
         if existing is not None:
             return existing
 
-        namespace = plan.runtime.namespace
+        namespace = kubernetes_namespace(plan)
         body = render_rayjob(plan, attempt_number=attempt_number)
         try:
             resource = self._client.create(namespace, body)
@@ -101,7 +107,7 @@ class KubeRayExecutor:
         return _external_job(resource)
 
     def get(self, plan: ExecutionPlan, *, attempt_number: int) -> ExternalJob | None:
-        namespace = plan.runtime.namespace
+        namespace = kubernetes_namespace(plan)
         name = rayjob_name(plan, attempt_number)
         try:
             resource = self._client.get(namespace, name)
@@ -112,7 +118,7 @@ class KubeRayExecutor:
         return _external_job(resource)
 
     def cancel(self, plan: ExecutionPlan, *, attempt_number: int) -> None:
-        namespace = plan.runtime.namespace
+        namespace = kubernetes_namespace(plan)
         name = rayjob_name(plan, attempt_number)
         try:
             self._client.delete(namespace, name)
@@ -120,6 +126,12 @@ class KubeRayExecutor:
             if _api_status(error) == 404:
                 return
             raise _executor_error(error) from error
+
+
+def kubernetes_namespace(plan: ExecutionPlan) -> str:
+    if plan.cluster_profile is not None:
+        return plan.cluster_profile.spec.kubernetes_namespace
+    return plan.runtime.namespace
 
 
 def rayjob_name(plan: ExecutionPlan, attempt_number: int) -> str:
@@ -150,19 +162,22 @@ def render_rayjob(
         "dataflow.io/run-id": plan.run_id,
         "dataflow.io/unit-id": plan.unit_id,
     }
+    annotations: dict[str, str] = {}
     if attempt_number is not None:
         labels["dataflow.io/attempt"] = str(attempt_number)
-
-    pod_spec: dict[str, Any] = {
-        "containers": [
-            {
-                "name": "ray-head",
-                "image": plan.runtime.image,
-            }
-        ]
-    }
-    if plan.runtime.service_account:
-        pod_spec["serviceAccountName"] = plan.runtime.service_account
+    if plan.cluster_profile is not None:
+        labels["dataflow.io/cluster-profile"] = _label_value(plan.cluster_profile.name)
+        labels["dataflow.io/cluster-profile-revision"] = str(plan.cluster_profile.revision)
+        profile = plan.cluster_profile.spec
+        if profile.queue:
+            labels["kueue.x-k8s.io/queue-name"] = profile.queue
+            if profile.autoscaling.enabled:
+                annotations["kueue.x-k8s.io/elastic-job"] = "true"
+        ray_cluster_spec = _render_profile_cluster(plan, profile, labels)
+        namespace = profile.kubernetes_namespace
+    else:
+        ray_cluster_spec = _legacy_ray_cluster(plan, labels)
+        namespace = plan.runtime.namespace
 
     plan_json = json.dumps(plan.model_dump(mode="json"), separators=(",", ":"))
     env_lines = [
@@ -173,50 +188,156 @@ def render_rayjob(
         env_lines.append(f"  DATAFLOW_ATTEMPT_NUMBER: '{attempt_number}'")
     runtime_env_yaml = "\n".join(env_lines) + "\n"
 
+    metadata: dict[str, Any] = {
+        "name": name,
+        "namespace": namespace,
+        "labels": labels,
+    }
+    if annotations:
+        metadata["annotations"] = annotations
+
     return {
         "apiVersion": f"{RAY_GROUP}/{RAY_VERSION}",
         "kind": "RayJob",
-        "metadata": {
-            "name": name,
-            "namespace": plan.runtime.namespace,
-            "labels": labels,
-        },
+        "metadata": metadata,
         "spec": {
             "entrypoint": "python -m dataflow.cli run-inline-plan",
             "runtimeEnvYAML": runtime_env_yaml,
             "shutdownAfterJobFinishes": True,
             "ttlSecondsAfterFinished": 300,
-            "rayClusterSpec": {
-                "rayVersion": "2.58.0",
-                "headGroupSpec": {
-                    "rayStartParams": {},
-                    "template": {
-                        "metadata": {"labels": labels},
-                        "spec": pod_spec,
-                    },
-                },
-                "workerGroupSpecs": [
-                    {
-                        "groupName": "cpu-workers",
-                        "replicas": 1,
-                        "minReplicas": 0,
-                        "maxReplicas": 8,
-                        "rayStartParams": {},
-                        "template": {
-                            "metadata": {"labels": labels},
-                            "spec": {
-                                "containers": [
-                                    {
-                                        "name": "ray-worker",
-                                        "image": plan.runtime.image,
-                                    }
-                                ]
-                            },
-                        },
-                    }
-                ],
+            "rayClusterSpec": ray_cluster_spec,
+        },
+    }
+
+
+def _render_profile_cluster(
+    plan: ExecutionPlan,
+    profile: ClusterProfileSpec,
+    labels: dict[str, str],
+) -> dict[str, Any]:
+    head_pod = _profile_pod_spec(
+        image=plan.runtime.image,
+        container_name="ray-head",
+        resources=pod_resource_requirements(profile.head.resources),
+        placement=profile.head.placement,
+        service_account=profile.service_account,
+        priority_class_name=profile.priority_class_name,
+    )
+    workers: list[dict[str, Any]] = []
+    for group in profile.worker_groups:
+        ray_labels = (
+            {"ray.io/accelerator-type": group.accelerator_type}
+            if group.accelerator_type
+            else {}
+        )
+        pod_labels = {**labels, **ray_labels}
+        pod_spec = _profile_pod_spec(
+            image=plan.runtime.image,
+            container_name="ray-worker",
+            resources=pod_resource_requirements(
+                group.resources,
+                gpu_resource_name=group.gpu_resource_name,
+            ),
+            placement=group.placement,
+            service_account=profile.service_account,
+            priority_class_name=profile.priority_class_name,
+        )
+        worker: dict[str, Any] = {
+            "groupName": group.name,
+            "replicas": group.replicas,
+            "minReplicas": group.min_replicas,
+            "maxReplicas": group.max_replicas,
+            "rayStartParams": {},
+            "template": {
+                "metadata": {"labels": pod_labels},
+                "spec": pod_spec,
+            },
+        }
+        if ray_labels:
+            worker["labels"] = ray_labels
+        if group.autoscaler_priority:
+            worker["priority"] = group.autoscaler_priority
+        workers.append(worker)
+
+    cluster: dict[str, Any] = {
+        "rayVersion": profile.ray_version,
+        "enableInTreeAutoscaling": profile.autoscaling.enabled,
+        "headGroupSpec": {
+            "rayStartParams": {"num-cpus": "0"},
+            "template": {
+                "metadata": {"labels": labels},
+                "spec": head_pod,
             },
         },
+        "workerGroupSpecs": workers,
+    }
+    if profile.autoscaling.enabled:
+        cluster["autoscalerOptions"] = {
+            "version": profile.autoscaling.version,
+            "idleTimeoutSeconds": profile.autoscaling.idle_timeout_seconds,
+        }
+    return cluster
+
+
+def _profile_pod_spec(
+    *,
+    image: str,
+    container_name: str,
+    resources: dict[str, dict[str, str]],
+    placement: PlacementSpec,
+    service_account: str | None,
+    priority_class_name: str | None,
+) -> dict[str, Any]:
+    pod: dict[str, Any] = {
+        "containers": [
+            {
+                "name": container_name,
+                "image": image,
+                "resources": resources,
+            }
+        ],
+        **placement_fields(
+            placement,
+            priority_class_name=priority_class_name,
+        ),
+    }
+    if service_account:
+        pod["serviceAccountName"] = service_account
+    return pod
+
+
+def _legacy_ray_cluster(plan: ExecutionPlan, labels: dict[str, str]) -> dict[str, Any]:
+    head_pod: dict[str, Any] = {
+        "containers": [{"name": "ray-head", "image": plan.runtime.image}]
+    }
+    if plan.runtime.service_account:
+        head_pod["serviceAccountName"] = plan.runtime.service_account
+    return {
+        "rayVersion": "2.58.0",
+        "headGroupSpec": {
+            "rayStartParams": {},
+            "template": {
+                "metadata": {"labels": labels},
+                "spec": head_pod,
+            },
+        },
+        "workerGroupSpecs": [
+            {
+                "groupName": "cpu-workers",
+                "replicas": 1,
+                "minReplicas": 0,
+                "maxReplicas": 8,
+                "rayStartParams": {},
+                "template": {
+                    "metadata": {"labels": labels},
+                    "spec": {
+                        "containers": [
+                            {"name": "ray-worker", "image": plan.runtime.image}
+                        ]
+                    },
+                },
+            }
+        ],
     }
 
 
@@ -278,10 +399,18 @@ def _dns_name(value: str, *, limit: int | None = 63) -> str:
     return normalized[:limit].rstrip("-")
 
 
+def _label_value(value: str) -> str:
+    normalized = "".join(
+        ch.lower() if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in value
+    ).strip("-_.")
+    return (normalized or "default")[:63].rstrip("-_.")
+
+
 __all__ = [
     "KubeRayExecutor",
     "KubernetesRayJobClient",
     "RayJobClient",
+    "kubernetes_namespace",
     "rayjob_name",
     "render_rayjob",
 ]

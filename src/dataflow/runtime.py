@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 from dataflow.artifacts import ArtifactOutputSpec
-from dataflow.contracts import ExecutionPlan, OperatorKind, OperatorSpec
+from dataflow.contracts import ExecutionPlan, OperatorKind, OperatorSpec, ResourceSpec
 
 
 class DatasetLike(Protocol):
@@ -62,15 +62,12 @@ class PlanExecutor:
 
         if operator.kind is OperatorKind.MAP_BATCHES:
             callable_path = _pop_required(config, "callable", operator)
-            fn = resolve_symbol(callable_path)
-            if operator.resources.cpu is not None:
-                config.setdefault("num_cpus", operator.resources.cpu)
-            if operator.resources.gpu is not None:
-                config.setdefault("num_gpus", operator.resources.gpu)
-            return dataset.map_batches(fn, **config)
+            _apply_worker_resources(config, operator.resources)
+            return dataset.map_batches(resolve_symbol(callable_path), **config)
 
         if operator.kind is OperatorKind.FILTER:
             callable_path = _pop_required(config, "callable", operator)
+            _apply_worker_resources(config, operator.resources)
             return dataset.filter(resolve_symbol(callable_path), **config)
 
         if operator.kind is OperatorKind.WRITE_PARQUET:
@@ -87,6 +84,19 @@ class PlanExecutor:
             return dataset
 
         raise ValueError(f"unsupported operator kind: {operator.kind}")
+
+
+def _apply_worker_resources(config: dict[str, Any], resources: ResourceSpec) -> None:
+    if resources.cpu is not None:
+        config.setdefault("num_cpus", resources.cpu)
+    if resources.gpu is not None:
+        config.setdefault("num_gpus", resources.gpu)
+    if resources.memory_bytes is not None:
+        config.setdefault("memory", resources.memory_bytes)
+    if resources.accelerator_type is not None:
+        selector = dict(config.get("label_selector") or {})
+        selector.setdefault("ray.io/accelerator-type", resources.accelerator_type)
+        config["label_selector"] = selector
 
 
 def _pop_required(config: dict[str, Any], key: str, operator: OperatorSpec) -> Any:

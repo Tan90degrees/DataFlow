@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from dataflow.artifacts import ArtifactOutputSpec, ArtifactRef
+from dataflow.cluster_profiles import ClusterProfileSnapshot
 
 
 class OperatorKind(StrEnum):
@@ -23,6 +24,7 @@ class ResourceSpec(BaseModel):
     cpu: float | None = Field(default=None, ge=0)
     gpu: float | None = Field(default=None, ge=0)
     memory_bytes: int | None = Field(default=None, ge=0)
+    accelerator_type: str | None = Field(default=None, min_length=1)
 
 
 class OperatorSpec(BaseModel):
@@ -40,6 +42,8 @@ class RuntimeSpec(BaseModel):
     image: str = Field(min_length=1)
     ray_address: str = "auto"
     namespace: str = "default"
+    # Retained for backward-compatible standalone plans. ClusterProfile.service_account
+    # is authoritative for newly compiled control-plane runs.
     service_account: str | None = None
 
 
@@ -54,6 +58,7 @@ class ExecutionPlan(BaseModel):
     unit_id: str = Field(min_length=1)
     operators: list[OperatorSpec] = Field(min_length=2)
     runtime: RuntimeSpec
+    cluster_profile: ClusterProfileSnapshot | None = None
     input_artifacts: list[ArtifactRef] = Field(default_factory=list)
     output_artifacts: list[ArtifactOutputSpec] = Field(default_factory=list)
 

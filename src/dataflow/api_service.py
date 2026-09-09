@@ -7,11 +7,18 @@ from uuid import UUID, uuid4
 
 from dataflow.api_repository import ApiRepository
 from dataflow.artifact_repository import ArtifactRecord
+from dataflow.cluster_profile_repository import ClusterProfileVersionRecord
+from dataflow.cluster_profiles import (
+    ClusterProfileSnapshot,
+    ClusterProfileSpec,
+    default_cluster_profile,
+)
 from dataflow.compiler import PipelineCompiler, PipelineSpec
 from dataflow.metadata.repository import (
     EventRecord,
     ExecutionAttemptRecord,
     ExecutionUnitRecord,
+    MetadataNotFoundError,
     PipelineRecord,
     PipelineRunRecord,
     PipelineVersionRecord,
@@ -37,6 +44,12 @@ class RunSnapshot:
     run: PipelineRunRecord
     units: list[UnitSnapshot]
     artifacts: list[ArtifactRecord]
+
+
+@dataclass(frozen=True, slots=True)
+class ClusterProfileHistory:
+    current: ClusterProfileVersionRecord | ClusterProfileSnapshot
+    versions: list[ClusterProfileVersionRecord]
 
 
 class ControlPlaneService:
@@ -86,6 +99,37 @@ class ControlPlaneService:
         versions = self._repository.list_pipeline_versions(pipeline_id)
         return PipelineSnapshot(pipeline=pipeline, versions=versions)
 
+    def create_cluster_profile(
+        self,
+        spec: ClusterProfileSpec,
+    ) -> ClusterProfileVersionRecord:
+        return self._repository.create_cluster_profile(spec)
+
+    def update_cluster_profile(
+        self,
+        name: str,
+        spec: ClusterProfileSpec,
+    ) -> ClusterProfileVersionRecord:
+        return self._repository.create_cluster_profile_revision(name, spec)
+
+    def list_cluster_profiles(self) -> list[ClusterProfileVersionRecord | ClusterProfileSnapshot]:
+        current = self._repository.list_current_cluster_profiles()
+        if not any(record.spec.name == "default" for record in current):
+            return [default_cluster_profile(), *current]
+        return current
+
+    def get_cluster_profile(self, name: str) -> ClusterProfileHistory:
+        try:
+            current = self._repository.get_current_cluster_profile(name)
+        except MetadataNotFoundError:
+            if name != "default":
+                raise
+            return ClusterProfileHistory(current=default_cluster_profile(), versions=[])
+        return ClusterProfileHistory(
+            current=current,
+            versions=self._repository.list_cluster_profile_versions(name),
+        )
+
     def create_pipeline_version(
         self,
         pipeline_id: UUID,
@@ -96,7 +140,8 @@ class ControlPlaneService:
             raise ValueError(
                 f"PipelineSpec.name {spec.name!r} must match pipeline name {pipeline.name!r}"
             )
-        self._preflight_compile(spec)
+        profiles = self._resolve_cluster_profiles(spec)
+        self._preflight_compile(spec, profiles)
         return self._repository.create_pipeline_version(
             pipeline_id,
             spec.model_dump(mode="json", by_alias=True),
@@ -111,7 +156,8 @@ class ControlPlaneService:
     ) -> RunSnapshot:
         version = self._repository.get_pipeline_version(pipeline_version_id)
         spec = PipelineSpec.model_validate(version.spec_json)
-        self._preflight_compile(spec)
+        profiles = self._resolve_cluster_profiles(spec)
+        self._preflight_compile(spec, profiles)
 
         run = self._repository.create_pipeline_run(
             version.id,
@@ -119,7 +165,11 @@ class ControlPlaneService:
             cluster_profile=spec.cluster_profile,
             created_by=created_by,
         )
-        graph = self._compiler.compile(spec, run_id=str(run.id))
+        graph = self._compiler.compile(
+            spec,
+            run_id=str(run.id),
+            cluster_profiles=profiles,
+        )
         self._repository.create_execution_graph(run.id, graph)
         self._repository.transition_run_status(
             run.id,
@@ -163,11 +213,38 @@ class ControlPlaneService:
         self._repository.get_run(run_id)
         return self._repository.list_run_artifacts(run_id)
 
-    def _preflight_compile(self, spec: PipelineSpec) -> None:
-        self._compiler.compile(spec, run_id=str(uuid4()))
+    def _resolve_cluster_profiles(
+        self,
+        spec: PipelineSpec,
+    ) -> dict[str, ClusterProfileSnapshot]:
+        names = {spec.cluster_profile}
+        names.update(node.cluster_profile for node in spec.nodes if node.cluster_profile)
+        resolved: dict[str, ClusterProfileSnapshot] = {}
+        for name in sorted(names):
+            try:
+                record = self._repository.get_current_cluster_profile(name)
+            except MetadataNotFoundError:
+                if name != "default":
+                    raise
+                resolved[name] = default_cluster_profile()
+            else:
+                resolved[name] = record.snapshot()
+        return resolved
+
+    def _preflight_compile(
+        self,
+        spec: PipelineSpec,
+        cluster_profiles: dict[str, ClusterProfileSnapshot],
+    ) -> None:
+        self._compiler.compile(
+            spec,
+            run_id=str(uuid4()),
+            cluster_profiles=cluster_profiles,
+        )
 
 
 __all__ = [
+    "ClusterProfileHistory",
     "ControlPlaneService",
     "PipelineSnapshot",
     "RunSnapshot",

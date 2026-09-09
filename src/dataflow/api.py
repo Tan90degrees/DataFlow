@@ -15,9 +15,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from dataflow.api_repository import PostgresApiRepository
-from dataflow.api_service import ControlPlaneService, RunSnapshot
+from dataflow.api_service import ClusterProfileHistory, ControlPlaneService, RunSnapshot
 from dataflow.artifact_repository import ArtifactRecord
 from dataflow.artifacts import ArtifactFormat, ArtifactState
+from dataflow.cluster_profile_repository import ClusterProfileVersionRecord
+from dataflow.cluster_profiles import ClusterProfileSnapshot, ClusterProfileSpec
 from dataflow.compiler import PipelineSpec
 from dataflow.metadata.repository import (
     ConcurrentStateChange,
@@ -91,6 +93,56 @@ class PipelineVersionResponse(BaseModel):
 class PipelineDetailResponse(BaseModel):
     pipeline: PipelineResponse
     versions: list[PipelineVersionResponse]
+
+
+class ClusterProfileVersionResponse(BaseModel):
+    id: UUID | None
+    name: str
+    revision: int
+    spec: ClusterProfileSpec
+    spec_hash: str
+    created_at: datetime | None
+    builtin: bool = False
+
+    @classmethod
+    def from_value(
+        cls,
+        value: ClusterProfileVersionRecord | ClusterProfileSnapshot,
+    ) -> ClusterProfileVersionResponse:
+        if isinstance(value, ClusterProfileSnapshot):
+            return cls(
+                id=None,
+                name=value.name,
+                revision=value.revision,
+                spec=value.spec,
+                spec_hash=value.spec_hash,
+                created_at=None,
+                builtin=True,
+            )
+        return cls(
+            id=value.id,
+            name=value.spec.name,
+            revision=value.revision,
+            spec=value.spec,
+            spec_hash=value.spec_hash,
+            created_at=value.created_at,
+            builtin=False,
+        )
+
+
+class ClusterProfileDetailResponse(BaseModel):
+    current: ClusterProfileVersionResponse
+    versions: list[ClusterProfileVersionResponse]
+
+    @classmethod
+    def from_history(cls, history: ClusterProfileHistory) -> ClusterProfileDetailResponse:
+        return cls(
+            current=ClusterProfileVersionResponse.from_value(history.current),
+            versions=[
+                ClusterProfileVersionResponse.from_value(version)
+                for version in history.versions
+            ],
+        )
 
 
 class AttemptResponse(BaseModel):
@@ -286,6 +338,43 @@ def create_app(service: ControlPlaneService) -> FastAPI:
         if not service.ready():
             return _error_response(503, "NOT_READY", "PostgreSQL is unavailable")
         return {"status": "ready"}
+
+    @app.post(
+        "/v1/cluster-profiles",
+        response_model=ClusterProfileVersionResponse,
+        status_code=201,
+    )
+    def create_cluster_profile(spec: ClusterProfileSpec) -> ClusterProfileVersionResponse:
+        return ClusterProfileVersionResponse.from_value(service.create_cluster_profile(spec))
+
+    @app.get(
+        "/v1/cluster-profiles",
+        response_model=list[ClusterProfileVersionResponse],
+    )
+    def list_cluster_profiles() -> list[ClusterProfileVersionResponse]:
+        return [
+            ClusterProfileVersionResponse.from_value(value)
+            for value in service.list_cluster_profiles()
+        ]
+
+    @app.get(
+        "/v1/cluster-profiles/{name}",
+        response_model=ClusterProfileDetailResponse,
+    )
+    def get_cluster_profile(name: str) -> ClusterProfileDetailResponse:
+        return ClusterProfileDetailResponse.from_history(service.get_cluster_profile(name))
+
+    @app.put(
+        "/v1/cluster-profiles/{name}",
+        response_model=ClusterProfileVersionResponse,
+    )
+    def update_cluster_profile(
+        name: str,
+        spec: ClusterProfileSpec,
+    ) -> ClusterProfileVersionResponse:
+        return ClusterProfileVersionResponse.from_value(
+            service.update_cluster_profile(name, spec)
+        )
 
     @app.post("/v1/pipelines", response_model=PipelineResponse, status_code=201)
     def create_pipeline(request: CreatePipelineRequest) -> PipelineResponse:

@@ -1,0 +1,66 @@
+{
+  "api_version": "dataflow.io/v1alpha1",
+  "kind": "ClusterProfile",
+  "name": "gpu-medium",
+  "ray_version": "2.58.0",
+  "kubernetes_namespace": "dataflow-ml",
+  "service_account": "dataflow-runner",
+  "priority_class_name": "dataflow-high",
+  "queue": "ml-batch",
+  "head": {
+    "resources": {
+      "cpu": 1,
+      "memory_bytes": 2147483648,
+      "gpu": 0
+    },
+    "placement": {
+      "node_selector": {
+        "node-pool": "control"
+      }
+    }
+  },
+  "worker_groups": [
+    {
+      "name": "cpu-workers",
+      "replicas": 0,
+      "min_replicas": 0,
+      "max_replicas": 8,
+      "resources": {
+        "cpu": 4,
+        "memory_bytes": 17179869184,
+        "gpu": 0
+      }
+    },
+    {
+      "name": "a100-workers",
+      "replicas": 0,
+      "min_replicas": 0,
+      "max_replicas": 4,
+      "resources": {
+        "cpu": 8,
+        "memory_bytes": 34359738368,
+        "gpu": 1
+      },
+      "accelerator_type": "A100",
+      "gpu_resource_name": "nvidia.com/gpu",
+      "placement": {
+        "node_selector": {
+          "accelerator": "a100"
+        },
+        "tolerations": [
+          {
+            "key": "nvidia.com/gpu",
+            "operator": "Exists",
+            "effect": "NoSchedule"
+          }
+        ]
+      },
+      "autoscaler_priority": 10
+    }
+  ],
+  "autoscaling": {
+    "enabled": true,
+    "version": "v2",
+    "idle_timeout_seconds": 120
+  }
+}
