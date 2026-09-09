@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Literal, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -114,8 +114,6 @@ class ClusterProfileSpec(BaseModel):
         return self
 
     def validate_request(self, request: ResourceSpec, *, node_id: str) -> None:
-        if all(_worker_satisfies(group, request) for group in []):  # pragma: no cover
-            return
         if any(_worker_satisfies(group, request) for group in self.worker_groups):
             return
         accelerator = (
