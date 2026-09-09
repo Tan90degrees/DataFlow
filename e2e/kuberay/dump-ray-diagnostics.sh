@@ -2,52 +2,98 @@
 set +e
 
 NAMESPACE="${DATAFLOW_E2E_NAMESPACE:-dataflow-e2e}"
+OUT_DIR="${DATAFLOW_E2E_DIAGNOSTICS_DIR:-.artifacts/kuberay-diagnostics}"
+SUMMARY="$OUT_DIR/summary.txt"
+mkdir -p "$OUT_DIR"
+: >"$SUMMARY"
 
-printf '\n[e2e] Ray/KubeRay diagnostics for namespace %s\n' "$NAMESPACE"
-kubectl get pods,jobs,rayjobs,rayclusters -n "$NAMESPACE" -o wide || true
+summary() {
+  printf '%s\n' "$*" | tee -a "$SUMMARY"
+}
 
-for pod in $(kubectl get pods -n "$NAMESPACE" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
-  containers="$(kubectl get pod -n "$NAMESPACE" "$pod" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null)"
-  if [[ "$containers" != *"ray-head"* && "$containers" != *"ray-worker"* ]]; then
-    continue
+summary "[e2e] Ray/KubeRay diagnostics for namespace $NAMESPACE"
+summary ""
+summary "===== RayJob status ====="
+kubectl get rayjobs -n "$NAMESPACE" -o json 2>/dev/null | jq -r '
+  if (.items | length) == 0 then
+    "(no RayJobs)"
+  else
+    .items[] |
+    "rayjob/\(.metadata.name) status=\(.status.jobStatus // \"<none>\") deployment=\(.status.jobDeploymentStatus // \"<none>\") cluster=\(.status.rayClusterName // \"<none>\") message=\(.status.message // \"\")"
+  end
+' | tee -a "$SUMMARY" || true
+
+summary ""
+summary "===== Ray pod/container termination summary ====="
+kubectl get pods -n "$NAMESPACE" -o json 2>/dev/null | jq -r '
+  .items[]
+  | select(any(.spec.containers[]?; .name == "ray-head" or .name == "ray-worker"))
+  | .metadata.name as $pod
+  | .status.phase as $phase
+  | (.status.containerStatuses // [])[]
+  | select(.name == "ray-head" or .name == "ray-worker")
+  | [
+      "pod=" + $pod,
+      "phase=" + ($phase // "<none>"),
+      "container=" + .name,
+      "ready=" + (.ready | tostring),
+      "restarts=" + (.restartCount | tostring),
+      "state=" + (
+        if .state.running then "running"
+        elif .state.waiting then "waiting:" + (.state.waiting.reason // "<none>")
+        elif .state.terminated then "terminated:" + (.state.terminated.reason // "<none>") + ":exit=" + (.state.terminated.exitCode | tostring)
+        else "<none>" end
+      ),
+      "last=" + (
+        if .lastState.terminated then
+          "terminated:" + (.lastState.terminated.reason // "<none>") + ":exit=" + (.lastState.terminated.exitCode | tostring)
+        elif .lastState.waiting then "waiting:" + (.lastState.waiting.reason // "<none>")
+        elif .lastState.running then "running"
+        else "<none>" end
+      )
+    ] | join(" ")
+' | tee -a "$SUMMARY" || true
+
+# Keep the full Kubernetes state out of the console log so GitHub does not
+# truncate away the process termination reason we actually need.
+kubectl get pods,jobs,rayjobs,rayclusters -n "$NAMESPACE" -o wide \
+  >"$OUT_DIR/resources-wide.txt" 2>&1 || true
+kubectl get rayjobs -n "$NAMESPACE" -o yaml \
+  >"$OUT_DIR/rayjobs.yaml" 2>&1 || true
+kubectl get rayclusters -n "$NAMESPACE" -o yaml \
+  >"$OUT_DIR/rayclusters.yaml" 2>&1 || true
+kubectl describe pods -n "$NAMESPACE" \
+  >"$OUT_DIR/pods-describe.txt" 2>&1 || true
+kubectl logs -n kuberay-system deployment/kuberay-operator --tail=1000 \
+  >"$OUT_DIR/kuberay-operator.log" 2>&1 || true
+kubectl logs -n "$NAMESPACE" deployment/dataflow-controller --tail=1000 \
+  >"$OUT_DIR/dataflow-controller.log" 2>&1 || true
+kubectl logs -n "$NAMESPACE" deployment/dataflow-api --tail=500 \
+  >"$OUT_DIR/dataflow-api.log" 2>&1 || true
+
+while IFS=$'\t' read -r pod container restarts; do
+  [[ -n "$pod" && -n "$container" ]] || continue
+  safe_name="${pod}-${container}"
+  kubectl logs -n "$NAMESPACE" "$pod" -c "$container" --tail=1000 \
+    >"$OUT_DIR/${safe_name}.log" 2>&1 || true
+
+  if [[ "${restarts:-0}" =~ ^[0-9]+$ ]] && (( restarts > 0 )); then
+    kubectl logs -n "$NAMESPACE" "$pod" -c "$container" --previous --tail=1000 \
+      >"$OUT_DIR/${safe_name}.previous.log" 2>&1 || true
+    summary ""
+    summary "===== previous log tail: pod/$pod container/$container ====="
+    tail -n 60 "$OUT_DIR/${safe_name}.previous.log" | tee -a "$SUMMARY" || true
   fi
 
-  printf '\n===== pod/%s describe =====\n' "$pod"
-  kubectl describe pod -n "$NAMESPACE" "$pod" || true
+done < <(
+  kubectl get pods -n "$NAMESPACE" -o json 2>/dev/null | jq -r '
+    .items[]
+    | .metadata.name as $pod
+    | (.status.containerStatuses // [])[]
+    | select(.name == "ray-head" or .name == "ray-worker")
+    | [$pod, .name, (.restartCount | tostring)] | @tsv
+  '
+)
 
-  printf '\n===== pod/%s container states =====\n' "$pod"
-  kubectl get pod -n "$NAMESPACE" "$pod" -o json | jq '{
-    pod: .metadata.name,
-    phase: .status.phase,
-    reason: .status.reason,
-    message: .status.message,
-    containerStatuses: [.status.containerStatuses[]? | {
-      name,
-      ready,
-      restartCount,
-      state,
-      lastState
-    }]
-  }' || true
-
-  for container in ray-head ray-worker; do
-    if [[ " $containers " != *" $container "* ]]; then
-      continue
-    fi
-
-    printf '\n===== pod/%s container/%s current logs =====\n' "$pod" "$container"
-    kubectl logs -n "$NAMESPACE" "$pod" -c "$container" --tail=400 || true
-
-    printf '\n===== pod/%s container/%s previous logs =====\n' "$pod" "$container"
-    kubectl logs -n "$NAMESPACE" "$pod" -c "$container" --previous --tail=400 || true
-  done
-done
-
-printf '\n===== RayJob YAML =====\n'
-kubectl get rayjobs -n "$NAMESPACE" -o yaml || true
-
-printf '\n===== RayCluster YAML =====\n'
-kubectl get rayclusters -n "$NAMESPACE" -o yaml || true
-
-printf '\n===== KubeRay operator tail =====\n'
-kubectl logs -n kuberay-system deployment/kuberay-operator --tail=400 || true
+summary ""
+summary "[e2e] full diagnostics saved under $OUT_DIR"
