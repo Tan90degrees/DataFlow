@@ -129,7 +129,7 @@ spec:
     spec:
       containers:
         - name: minio
-          image: minio/minio:RELEASE.2025-10-15T17-29-55Z
+          image: minio/minio:RELEASE.2025-09-07T16-13-09Z
           args: ["server", "/data", "--console-address", ":9001"]
           env:
             - name: MINIO_ROOT_USER
@@ -180,7 +180,7 @@ metadata:
   name: dataflow-migrate
   namespace: dataflow-e2e
 spec:
-  backoffLimit: 3
+  backoffLimit: 6
   template:
     spec:
       restartPolicy: Never
@@ -212,24 +212,39 @@ spec:
           args:
             - |
               import os
+              import time
               import pyarrow as pa
               import pyarrow.parquet as pq
               from pyarrow import fs
 
-              store = fs.S3FileSystem(
-                  access_key=os.environ["AWS_ACCESS_KEY_ID"],
-                  secret_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-                  region="us-east-1",
-                  scheme="http",
-                  endpoint_override="minio:9000",
-                  allow_bucket_creation=True,
-              )
-              store.create_dir("dataflow-e2e")
-              table = pa.table({
-                  "value": list(range(256)),
-                  "group": [value % 8 for value in range(256)],
-              })
-              pq.write_table(table, "dataflow-e2e/input/data.parquet", filesystem=store)
+              last_error = None
+              for attempt in range(60):
+                  try:
+                      store = fs.S3FileSystem(
+                          access_key=os.environ["AWS_ACCESS_KEY_ID"],
+                          secret_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+                          region="us-east-1",
+                          scheme="http",
+                          endpoint_override="minio:9000",
+                          allow_bucket_creation=True,
+                      )
+                      store.create_dir("dataflow-e2e")
+                      table = pa.table({
+                          "value": list(range(256)),
+                          "group": [value % 8 for value in range(256)],
+                      })
+                      pq.write_table(
+                          table,
+                          "dataflow-e2e/input/data.parquet",
+                          filesystem=store,
+                      )
+                      break
+                  except Exception as error:
+                      last_error = error
+                      if attempt == 59:
+                          raise
+                      time.sleep(2)
+              print("seeded input parquet", last_error)
           envFrom:
             - secretRef:
                 name: dataflow-s3
@@ -318,7 +333,7 @@ spec:
             - name: AWS_DEFAULT_REGION
               value: us-east-1
             - name: DATAFLOW_CONTROLLER_POLL_SECONDS
-              value: "5"
+              value: "10"
             - name: DATAFLOW_RETRY_MAX_ATTEMPTS
               value: "3"
             - name: DATAFLOW_RETRY_INITIAL_BACKOFF_SECONDS
