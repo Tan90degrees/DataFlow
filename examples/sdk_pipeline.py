@@ -1,23 +1,12 @@
 """Minimal DataFlow SDK example.
 
-In production, keep these top-level callables in an importable package that is baked into
-the immutable runtime image referenced by the pipeline.
+Production callables must live in importable modules included in the immutable runtime
+image. This example reuses the package's smoke-test callables so it also works when the
+file itself is executed as a script (where locally defined functions would be __main__).
 """
 
+from dataflow.callables import identity_batch, keep_all
 from dataflow.sdk import DataFlowClient, Resources, pipeline
-
-
-def preprocess(batch):
-    return batch
-
-
-class Predictor:
-    def __call__(self, batch):
-        return batch
-
-
-def keep_result(row):
-    return True
 
 
 @pipeline(
@@ -29,17 +18,17 @@ def keep_result(row):
 def image_pipeline(flow, input_path: str, output_path: str) -> None:
     dataset = flow.read_parquet(input_path, node_id="read")
     dataset = dataset.map_batches(
-        preprocess,
+        identity_batch,
         node_id="preprocess",
         resources=Resources(cpu=2, memory_bytes=4 * 1024**3),
         batch_size=128,
     )
     dataset = dataset.checkpoint().map_batches(
-        Predictor,
+        identity_batch,
         node_id="predict",
         resources=Resources(cpu=2, gpu=1),
     )
-    dataset.filter(keep_result, node_id="filter").write_parquet(
+    dataset.filter(keep_all, node_id="filter").write_parquet(
         output_path,
         node_id="write",
     )
