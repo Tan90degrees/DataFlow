@@ -137,6 +137,18 @@ class DataFlowClient:
     def get_run(self, run_id: UUID | str) -> dict[str, Any]:
         return self._request("GET", f"/v1/pipeline-runs/{run_id}")
 
+    def get_run_diagnostics(
+        self,
+        run_id: UUID | str,
+        *,
+        event_limit: int = 200,
+    ) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"/v1/pipeline-runs/{run_id}/diagnostics",
+            params={"event_limit": event_limit},
+        )
+
     def cancel_run(self, run_id: UUID | str) -> dict[str, Any]:
         return self._request("POST", f"/v1/pipeline-runs/{run_id}/cancel")
 
