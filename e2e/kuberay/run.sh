@@ -82,7 +82,7 @@ rayjob_count() {
 
 assert_s3_outputs() {
   local run_id=$1
-  kubectl exec -n "$NAMESPACE" deployment/dataflow-controller -- python - "$run_id" <<'PY'
+  kubectl exec -i -n "$NAMESPACE" deployment/dataflow-controller -- python - "$run_id" <<'PY'
 import os
 import sys
 import boto3
