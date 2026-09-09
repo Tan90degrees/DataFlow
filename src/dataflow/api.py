@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
+from time import perf_counter
 from typing import Any
 from uuid import UUID
 
@@ -11,11 +12,16 @@ import psycopg
 from fastapi import FastAPI, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from dataflow.api_repository import PostgresApiRepository
-from dataflow.api_service import ClusterProfileHistory, ControlPlaneService, RunSnapshot
+from dataflow.api_service import (
+    ClusterProfileHistory,
+    ControlPlaneService,
+    RunDiagnosticSnapshot,
+    RunSnapshot,
+)
 from dataflow.artifact_repository import ArtifactRecord
 from dataflow.artifacts import ArtifactFormat, ArtifactState
 from dataflow.cluster_profile_repository import ClusterProfileVersionRecord
@@ -29,6 +35,11 @@ from dataflow.metadata.repository import (
     MetadataNotFoundError,
     PipelineRecord,
     PipelineVersionRecord,
+)
+from dataflow.observability import (
+    DEFAULT_OBSERVABILITY,
+    Observability,
+    configure_json_logging,
 )
 from dataflow.state import (
     ExecutionAttemptStatus,
@@ -198,6 +209,7 @@ class UnitResponse(BaseModel):
 class ArtifactResponse(BaseModel):
     id: UUID
     node_id: str
+    execution_unit_id: UUID | None
     attempt_number: int
     format: ArtifactFormat
     state: ArtifactState
@@ -216,6 +228,7 @@ class ArtifactResponse(BaseModel):
         return cls(
             id=record.id,
             node_id=record.node_id,
+            execution_unit_id=record.execution_unit_id,
             attempt_number=record.attempt_number,
             format=record.format,
             state=record.state,
@@ -285,8 +298,96 @@ class EventResponse(BaseModel):
         )
 
 
-def create_app(service: ControlPlaneService) -> FastAPI:
+class DiagnosticUnitResponse(BaseModel):
+    unit: UnitResponse
+    latest_external_job_id: str | None
+    artifacts: list[ArtifactResponse]
+
+
+class RunDiagnosticResponse(BaseModel):
+    pipeline: PipelineResponse
+    version: PipelineVersionResponse
+    run_id: UUID
+    status: PipelineRunStatus
+    cluster_profile: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    units: list[DiagnosticUnitResponse]
+    events: list[EventResponse]
+
+    @classmethod
+    def from_snapshot(cls, snapshot: RunDiagnosticSnapshot) -> RunDiagnosticResponse:
+        diagnostic_units: list[DiagnosticUnitResponse] = []
+        for item in snapshot.units:
+            latest_job_id = next(
+                (
+                    attempt.external_job_id
+                    for attempt in reversed(item.attempts)
+                    if attempt.external_job_id
+                ),
+                None,
+            )
+            diagnostic_units.append(
+                DiagnosticUnitResponse(
+                    unit=UnitResponse.from_record(item.unit, item.attempts),
+                    latest_external_job_id=latest_job_id,
+                    artifacts=[ArtifactResponse.from_record(value) for value in item.artifacts],
+                )
+            )
+        run = snapshot.run
+        return cls(
+            pipeline=PipelineResponse.from_record(snapshot.pipeline),
+            version=PipelineVersionResponse.from_record(snapshot.version),
+            run_id=run.id,
+            status=run.status,
+            cluster_profile=run.cluster_profile,
+            created_at=run.created_at,
+            started_at=run.started_at,
+            finished_at=run.finished_at,
+            units=diagnostic_units,
+            events=[EventResponse.from_record(event) for event in snapshot.events],
+        )
+
+
+def create_app(
+    service: ControlPlaneService,
+    *,
+    observability: Observability | None = None,
+) -> FastAPI:
+    obs = observability or DEFAULT_OBSERVABILITY
     app = FastAPI(title="DataFlow Control Plane", version="0.1.0")
+
+    @app.middleware("http")
+    async def observe_request(request: Request, call_next):
+        started = perf_counter()
+        status_code = 500
+        with obs.span(
+            "dataflow.http_request",
+            **{"http.request.method": request.method, "url.path": request.url.path},
+        ):
+            try:
+                response = await call_next(request)
+                status_code = response.status_code
+                return response
+            finally:
+                route_object = request.scope.get("route")
+                route = getattr(route_object, "path", request.url.path)
+                duration = perf_counter() - started
+                if route != "/metrics":
+                    obs.metrics.observe_api_request(
+                        method=request.method,
+                        route=route,
+                        status_code=status_code,
+                        duration_seconds=duration,
+                    )
+                    obs.info(
+                        "api_request",
+                        method=request.method,
+                        route=route,
+                        status_code=status_code,
+                        duration_seconds=round(duration, 6),
+                    )
 
     @app.exception_handler(MetadataNotFoundError)
     def handle_not_found(_request: Request, error: MetadataNotFoundError) -> JSONResponse:
@@ -338,6 +439,14 @@ def create_app(service: ControlPlaneService) -> FastAPI:
         if not service.ready():
             return _error_response(503, "NOT_READY", "PostgreSQL is unavailable")
         return {"status": "ready"}
+
+    @app.get("/metrics", response_model=None)
+    def metrics() -> Response:
+        rendered = obs.metrics.render()
+        if rendered is None:
+            return Response(status_code=404)
+        body, content_type = rendered
+        return Response(content=body, media_type=content_type)
 
     @app.post(
         "/v1/cluster-profiles",
@@ -437,6 +546,18 @@ def create_app(service: ControlPlaneService) -> FastAPI:
     def get_run(run_id: UUID) -> RunResponse:
         return RunResponse.from_snapshot(service.get_run(run_id))
 
+    @app.get(
+        "/v1/pipeline-runs/{run_id}/diagnostics",
+        response_model=RunDiagnosticResponse,
+    )
+    def get_run_diagnostics(
+        run_id: UUID,
+        event_limit: int = Query(default=200, ge=1, le=1000),
+    ) -> RunDiagnosticResponse:
+        return RunDiagnosticResponse.from_snapshot(
+            service.get_run_diagnostics(run_id, event_limit=event_limit)
+        )
+
     @app.post("/v1/pipeline-runs/{run_id}/cancel", response_model=RunResponse)
     def cancel_run(run_id: UUID) -> RunResponse:
         return RunResponse.from_snapshot(service.cancel_run(run_id))
@@ -461,7 +582,9 @@ def create_app_from_env() -> FastAPI:
     dsn = os.environ.get("DATAFLOW_DATABASE_URL")
     if not dsn:
         raise RuntimeError("DATAFLOW_DATABASE_URL is required")
-    return create_app(ControlPlaneService(PostgresApiRepository(dsn)))
+    observability = Observability.from_env()
+    service = ControlPlaneService(PostgresApiRepository(dsn), observability=observability)
+    return create_app(service, observability=observability)
 
 
 def main() -> None:
@@ -470,6 +593,8 @@ def main() -> None:
     except ImportError as error:
         raise RuntimeError("install DataFlow with the 'api' extra to run the API server") from error
 
+    if os.environ.get("DATAFLOW_JSON_LOGS", "false").lower() in {"1", "true", "yes"}:
+        configure_json_logging()
     host = os.environ.get("DATAFLOW_API_HOST", "0.0.0.0")
     port = int(os.environ.get("DATAFLOW_API_PORT", "8080"))
     uvicorn.run(

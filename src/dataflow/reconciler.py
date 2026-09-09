@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from time import perf_counter
 from typing import Protocol
 from uuid import UUID
 
@@ -22,6 +23,7 @@ from dataflow.metadata.repository import (
     ExecutionUnitRecord,
     PipelineRunRecord,
 )
+from dataflow.observability import DEFAULT_OBSERVABILITY, Observability
 from dataflow.state import (
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_UNIT_STATUSES,
@@ -72,15 +74,52 @@ class Reconciler:
         retry_policy: RetryPolicy | None = None,
         artifact_manager: ArtifactManager | None = None,
         now: Callable[[], datetime] | None = None,
+        observability: Observability | None = None,
     ) -> None:
         self._repository = repository
         self._executor = executor
         self._retry_policy = retry_policy or RetryPolicy()
         self._artifact_manager = artifact_manager
         self._now = now or (lambda: datetime.now(UTC))
+        self._observability = observability or DEFAULT_OBSERVABILITY
 
     def reconcile_unit(self, unit_id: UUID) -> ExecutionUnitRecord:
         unit = self._repository.get_unit(unit_id)
+        started = perf_counter()
+        outcome = "error"
+        with self._observability.bind(
+            run_id=str(unit.pipeline_run_id),
+            unit_id=str(unit.id),
+            unit_key=unit.unit_key,
+        ), self._observability.span(
+            "dataflow.reconcile_unit",
+            run_id=str(unit.pipeline_run_id),
+            unit_id=str(unit.id),
+            unit_key=unit.unit_key,
+            unit_status=unit.status.value,
+        ):
+            self._observability.info("reconcile_unit_started", unit_status=unit.status.value)
+            try:
+                result = self._reconcile_loaded_unit(unit)
+                outcome = result.status.value.lower()
+                self._observability.info(
+                    "reconcile_unit_finished",
+                    unit_status=result.status.value,
+                )
+                return result
+            except Exception as error:
+                self._observability.error(
+                    "reconcile_unit_error",
+                    error_type=type(error).__name__,
+                )
+                raise
+            finally:
+                self._observability.metrics.observe_reconciliation(
+                    outcome=outcome,
+                    duration_seconds=perf_counter() - started,
+                )
+
+    def _reconcile_loaded_unit(self, unit: ExecutionUnitRecord) -> ExecutionUnitRecord:
         if unit.status in TERMINAL_UNIT_STATUSES:
             return unit
 
@@ -117,6 +156,11 @@ class Reconciler:
         unit = self._transition_unit(unit, ExecutionUnitStatus.SUBMITTING)
         attempt = self._repository.create_attempt(unit.id)
         attempt = self._transition_attempt(attempt, ExecutionAttemptStatus.SUBMITTING)
+        self._observability.info(
+            "execution_attempt_submitting",
+            attempt_id=str(attempt.id),
+            attempt_number=attempt.attempt_number,
+        )
         try:
             job = self._executor.submit(plan, attempt_number=attempt.attempt_number)
         except ExecutorError as error:
@@ -186,6 +230,17 @@ class Reconciler:
         job: ExternalJob,
         plan: ExecutionPlan,
     ) -> ExecutionUnitRecord:
+        with self._observability.bind(
+            attempt_id=str(attempt.id),
+            attempt_number=attempt.attempt_number,
+            external_job_id=job.id,
+        ):
+            self._observability.info(
+                "external_job_observed",
+                external_job_state=job.state.value,
+                error_code=job.error_code,
+            )
+
         if job.state is ExternalJobState.PENDING:
             if attempt.status is ExecutionAttemptStatus.UNKNOWN:
                 attempt = self._transition_attempt(
@@ -293,6 +348,12 @@ class Reconciler:
         job: ExternalJob,
     ) -> ExecutionUnitRecord:
         if self._retry_policy.should_retry(job, attempt_number=attempt.attempt_number):
+            self._observability.metrics.observe_unit_retry(error_code=job.error_code)
+            self._observability.warning(
+                "execution_unit_retry_scheduled",
+                attempt_number=attempt.attempt_number,
+                error_code=job.error_code,
+            )
             return self._transition_unit(
                 unit,
                 ExecutionUnitStatus.RETRY_WAIT,
@@ -316,6 +377,13 @@ class Reconciler:
         attempt: ExecutionAttemptRecord,
         error: ExecutorError,
     ) -> ExecutionUnitRecord:
+        self._observability.metrics.observe_reconciliation_error(error_code=error.error_code)
+        self._observability.warning(
+            "executor_error",
+            attempt_number=attempt.attempt_number,
+            error_code=error.error_code,
+            retryable=error.retryable,
+        )
         if error.retryable:
             self._transition_attempt(
                 attempt,
@@ -343,6 +411,7 @@ class Reconciler:
             retryable=error.retryable,
         )
         if should_retry:
+            self._observability.metrics.observe_unit_retry(error_code=error.error_code)
             return self._transition_unit(unit, ExecutionUnitStatus.RETRY_WAIT)
         return self._transition_unit(unit, ExecutionUnitStatus.FAILED)
 
@@ -353,6 +422,13 @@ class Reconciler:
         plan: ExecutionPlan,
         error: ArtifactCommitError,
     ) -> ExecutionUnitRecord:
+        self._observability.metrics.observe_reconciliation_error(error_code=error.error_code)
+        self._observability.warning(
+            "artifact_publication_error",
+            attempt_number=attempt.attempt_number,
+            error_code=error.error_code,
+            retryable=error.retryable,
+        )
         if error.retryable:
             if attempt.status is not ExecutionAttemptStatus.UNKNOWN:
                 self._transition_attempt(
@@ -416,12 +492,18 @@ class Reconciler:
         if not plan.output_artifacts:
             return
         if self._artifact_manager is None:
+            self._observability.metrics.observe_artifact_publication(outcome="error")
             raise ArtifactCommitError(
                 "durable artifact outputs require an ArtifactManager",
                 error_code="ARTIFACT_MANAGER_NOT_CONFIGURED",
                 retryable=False,
             )
-        self._artifact_manager.commit_outputs(plan, attempt_number=attempt_number)
+        try:
+            self._artifact_manager.commit_outputs(plan, attempt_number=attempt_number)
+        except ArtifactCommitError:
+            self._observability.metrics.observe_artifact_publication(outcome="error")
+            raise
+        self._observability.metrics.observe_artifact_publication(outcome="committed")
 
     def _abort_artifacts(self, plan: ExecutionPlan, attempt_number: int) -> None:
         if not plan.output_artifacts or self._artifact_manager is None:
@@ -431,6 +513,7 @@ class Reconciler:
             attempt_number=attempt_number,
             best_effort=True,
         )
+        self._observability.metrics.observe_artifact_publication(outcome="aborted")
 
     def _transition_unit(
         self,
@@ -441,12 +524,26 @@ class Reconciler:
     ) -> ExecutionUnitRecord:
         if unit.status is target:
             return unit
-        return self._repository.transition_unit_status(
+        updated = self._repository.transition_unit_status(
             unit.id,
             target,
             expected=unit.status,
             payload=payload,
         )
+        self._observability.info(
+            "execution_unit_state_changed",
+            previous_status=unit.status.value,
+            unit_status=target.value,
+        )
+        if target in TERMINAL_UNIT_STATUSES:
+            duration_seconds = None
+            if updated.started_at is not None and updated.finished_at is not None:
+                duration_seconds = (updated.finished_at - updated.started_at).total_seconds()
+            self._observability.metrics.observe_unit_terminal(
+                status=target.value,
+                duration_seconds=duration_seconds,
+            )
+        return updated
 
     def _transition_attempt(
         self,
@@ -459,7 +556,7 @@ class Reconciler:
     ) -> ExecutionAttemptRecord:
         if attempt.status is target:
             return attempt
-        return self._repository.transition_attempt_status(
+        updated = self._repository.transition_attempt_status(
             attempt.id,
             target,
             expected=attempt.status,
@@ -467,6 +564,16 @@ class Reconciler:
             error_code=error_code,
             error_message=error_message,
         )
+        self._observability.info(
+            "execution_attempt_state_changed",
+            attempt_id=str(attempt.id),
+            attempt_number=attempt.attempt_number,
+            previous_status=attempt.status.value,
+            attempt_status=target.value,
+            external_job_id=external_job_id,
+            error_code=error_code,
+        )
+        return updated
 
 
 __all__ = ["Reconciler", "ReconciliationRepository"]

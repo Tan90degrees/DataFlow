@@ -23,6 +23,7 @@ from dataflow.metadata.repository import (
     PipelineRunRecord,
     PipelineVersionRecord,
 )
+from dataflow.observability import DEFAULT_OBSERVABILITY, Observability
 from dataflow.scheduler import Scheduler
 from dataflow.state import PipelineRunStatus
 
@@ -47,6 +48,22 @@ class RunSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class DiagnosticUnitSnapshot:
+    unit: ExecutionUnitRecord
+    attempts: list[ExecutionAttemptRecord]
+    artifacts: list[ArtifactRecord]
+
+
+@dataclass(frozen=True, slots=True)
+class RunDiagnosticSnapshot:
+    pipeline: PipelineRecord
+    version: PipelineVersionRecord
+    run: PipelineRunRecord
+    units: list[DiagnosticUnitSnapshot]
+    events: list[EventRecord]
+
+
+@dataclass(frozen=True, slots=True)
 class ClusterProfileHistory:
     current: ClusterProfileVersionRecord | ClusterProfileSnapshot
     versions: list[ClusterProfileVersionRecord]
@@ -60,9 +77,11 @@ class ControlPlaneService:
         repository: ApiRepository,
         *,
         compiler: PipelineCompiler | None = None,
+        observability: Observability | None = None,
     ) -> None:
         self._repository = repository
         self._compiler = compiler or PipelineCompiler()
+        self._observability = observability or DEFAULT_OBSERVABILITY
         self._scheduler = Scheduler(repository)
 
     def ready(self) -> bool:
@@ -154,40 +173,57 @@ class ControlPlaneService:
         parameters: dict | None = None,
         created_by: str | None = None,
     ) -> RunSnapshot:
-        version = self._repository.get_pipeline_version(pipeline_version_id)
-        spec = PipelineSpec.model_validate(version.spec_json)
-        profiles = self._resolve_cluster_profiles(spec)
-        self._preflight_compile(spec, profiles)
+        with self._observability.span(
+            "dataflow.create_run",
+            pipeline_version_id=str(pipeline_version_id),
+        ):
+            version = self._repository.get_pipeline_version(pipeline_version_id)
+            spec = PipelineSpec.model_validate(version.spec_json)
+            profiles = self._resolve_cluster_profiles(spec)
+            self._preflight_compile(spec, profiles)
 
-        run = self._repository.create_pipeline_run(
-            version.id,
-            parameters=parameters,
-            cluster_profile=spec.cluster_profile,
-            created_by=created_by,
-        )
-        graph = self._compiler.compile(
-            spec,
-            run_id=str(run.id),
-            cluster_profiles=profiles,
-        )
-        self._repository.create_execution_graph(run.id, graph)
-        self._repository.transition_run_status(
-            run.id,
-            PipelineRunStatus.QUEUED,
-            expected=PipelineRunStatus.CREATED,
-        )
-        self._repository.transition_run_status(
-            run.id,
-            PipelineRunStatus.PLANNING,
-            expected=PipelineRunStatus.QUEUED,
-        )
-        self._repository.transition_run_status(
-            run.id,
-            PipelineRunStatus.RUNNING,
-            expected=PipelineRunStatus.PLANNING,
-        )
-        self._scheduler.reconcile_run(run.id)
-        return self.get_run(run.id)
+            run = self._repository.create_pipeline_run(
+                version.id,
+                parameters=parameters,
+                cluster_profile=spec.cluster_profile,
+                created_by=created_by,
+            )
+            with self._observability.bind(run_id=str(run.id), pipeline_name=spec.name):
+                self._observability.info(
+                    "pipeline_run_created",
+                    pipeline_version_id=str(version.id),
+                )
+                graph = self._compiler.compile(
+                    spec,
+                    run_id=str(run.id),
+                    cluster_profiles=profiles,
+                )
+                self._repository.create_execution_graph(run.id, graph)
+                queued = self._repository.transition_run_status(
+                    run.id,
+                    PipelineRunStatus.QUEUED,
+                    expected=PipelineRunStatus.CREATED,
+                )
+                self._repository.transition_run_status(
+                    run.id,
+                    PipelineRunStatus.PLANNING,
+                    expected=PipelineRunStatus.QUEUED,
+                )
+                running = self._repository.transition_run_status(
+                    run.id,
+                    PipelineRunStatus.RUNNING,
+                    expected=PipelineRunStatus.PLANNING,
+                )
+                if queued.queued_at is not None and running.started_at is not None:
+                    self._observability.metrics.observe_run_queue(
+                        duration_seconds=(running.started_at - queued.queued_at).total_seconds()
+                    )
+                self._scheduler.reconcile_run(run.id)
+                self._observability.info(
+                    "pipeline_run_started",
+                    execution_units=len(graph.units),
+                )
+                return self.get_run(run.id)
 
     def get_run(self, run_id: UUID) -> RunSnapshot:
         run = self._repository.get_run(run_id)
@@ -201,9 +237,44 @@ class ControlPlaneService:
         artifacts = self._repository.list_run_artifacts(run_id)
         return RunSnapshot(run=run, units=units, artifacts=artifacts)
 
+    def get_run_diagnostics(
+        self,
+        run_id: UUID,
+        *,
+        event_limit: int = 200,
+    ) -> RunDiagnosticSnapshot:
+        if event_limit < 1 or event_limit > 1000:
+            raise ValueError("event_limit must be between 1 and 1000")
+        run = self._repository.get_run(run_id)
+        version = self._repository.get_pipeline_version(run.pipeline_version_id)
+        pipeline = self._repository.get_pipeline(version.pipeline_id)
+        artifacts = self._repository.list_run_artifacts(run_id)
+        artifacts_by_unit: dict[UUID, list[ArtifactRecord]] = {}
+        for artifact in artifacts:
+            if artifact.execution_unit_id is not None:
+                artifacts_by_unit.setdefault(artifact.execution_unit_id, []).append(artifact)
+        units = [
+            DiagnosticUnitSnapshot(
+                unit=unit,
+                attempts=self._repository.list_attempts(unit.id),
+                artifacts=artifacts_by_unit.get(unit.id, []),
+            )
+            for unit in self._repository.list_units(run_id)
+        ]
+        events = self._repository.list_events(run_id)[-event_limit:]
+        return RunDiagnosticSnapshot(
+            pipeline=pipeline,
+            version=version,
+            run=run,
+            units=units,
+            events=events,
+        )
+
     def cancel_run(self, run_id: UUID) -> RunSnapshot:
-        self._scheduler.cancel_run(run_id)
-        return self.get_run(run_id)
+        with self._observability.bind(run_id=str(run_id)):
+            self._observability.info("pipeline_run_cancel_requested")
+            self._scheduler.cancel_run(run_id)
+            return self.get_run(run_id)
 
     def list_events(self, run_id: UUID) -> list[EventRecord]:
         self._repository.get_run(run_id)
@@ -246,7 +317,9 @@ class ControlPlaneService:
 __all__ = [
     "ClusterProfileHistory",
     "ControlPlaneService",
+    "DiagnosticUnitSnapshot",
     "PipelineSnapshot",
+    "RunDiagnosticSnapshot",
     "RunSnapshot",
     "UnitSnapshot",
 ]

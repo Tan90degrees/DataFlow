@@ -8,6 +8,7 @@ from typing import Protocol
 from uuid import UUID
 
 from dataflow.metadata.repository import ExecutionUnitRecord, PipelineRunRecord
+from dataflow.observability import DEFAULT_OBSERVABILITY, Observability
 from dataflow.reconciler import Reconciler
 from dataflow.scheduler import Scheduler
 
@@ -28,29 +29,60 @@ class OrchestrationController:
         repository: ControllerRepository,
         scheduler: Scheduler,
         reconciler: Reconciler,
+        *,
+        observability: Observability | None = None,
     ) -> None:
         self._repository = repository
         self._scheduler = scheduler
         self._reconciler = reconciler
+        self._observability = observability or DEFAULT_OBSERVABILITY
 
     def reconcile_once(self) -> None:
         active_runs = self._repository.list_active_runs()
+        self._observability.info(
+            "controller_reconcile_started",
+            active_runs=len(active_runs),
+        )
         for run in active_runs:
-            self._scheduler.reconcile_run(run.id)
+            with self._observability.bind(run_id=str(run.id)):
+                self._observability.info(
+                    "controller_schedule_run",
+                    run_status=run.status.value,
+                )
+                self._scheduler.reconcile_run(run.id)
 
         touched_runs: set[UUID] = {run.id for run in active_runs}
-        for unit in self._repository.list_recoverable_units():
+        recoverable = self._repository.list_recoverable_units()
+        for unit in recoverable:
             touched_runs.add(unit.pipeline_run_id)
-            self._reconciler.reconcile_unit(unit.id)
+            with self._observability.bind(
+                run_id=str(unit.pipeline_run_id),
+                unit_id=str(unit.id),
+                unit_key=unit.unit_key,
+            ):
+                self._observability.info(
+                    "controller_reconcile_unit",
+                    unit_status=unit.status.value,
+                )
+                self._reconciler.reconcile_unit(unit.id)
 
         active_ids = {run.id for run in self._repository.list_active_runs()}
         for run_id in sorted(touched_runs & active_ids, key=str):
-            self._scheduler.reconcile_run(run_id)
+            with self._observability.bind(run_id=str(run_id)):
+                self._scheduler.reconcile_run(run_id)
+
+        self._observability.info(
+            "controller_reconcile_finished",
+            active_runs=len(active_runs),
+            recoverable_units=len(recoverable),
+        )
 
     def cancel_run(self, run_id: UUID) -> None:
-        self._scheduler.cancel_run(run_id)
-        for unit in self._repository.list_units(run_id):
-            self._reconciler.reconcile_unit(unit.id)
+        with self._observability.bind(run_id=str(run_id)):
+            self._observability.info("controller_cancel_run")
+            self._scheduler.cancel_run(run_id)
+            for unit in self._repository.list_units(run_id):
+                self._reconciler.reconcile_unit(unit.id)
 
     def run_forever(
         self,
