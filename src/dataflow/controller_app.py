@@ -8,6 +8,7 @@ from dataflow.api_repository import PostgresApiRepository
 from dataflow.artifact_manager import ArtifactManager
 from dataflow.artifacts import Boto3S3ObjectClient, S3ParquetArtifactStorage
 from dataflow.controller import OrchestrationController
+from dataflow.executor import RetryPolicy
 from dataflow.kuberay import KubeRayExecutor, KubernetesRayJobClient
 from dataflow.observability import Observability, configure_json_logging
 from dataflow.reconciler import Reconciler
@@ -30,9 +31,18 @@ def create_controller_from_env() -> OrchestrationController:
         Boto3S3ObjectClient.from_default_config(**client_kwargs)
     )
     executor = KubeRayExecutor(KubernetesRayJobClient.from_default_config())
+    retry_policy = RetryPolicy(
+        max_attempts=int(os.environ.get("DATAFLOW_RETRY_MAX_ATTEMPTS", "3")),
+        initial_backoff_seconds=float(
+            os.environ.get("DATAFLOW_RETRY_INITIAL_BACKOFF_SECONDS", "30")
+        ),
+        multiplier=float(os.environ.get("DATAFLOW_RETRY_MULTIPLIER", "2")),
+        max_backoff_seconds=float(os.environ.get("DATAFLOW_RETRY_MAX_BACKOFF_SECONDS", "600")),
+    )
     reconciler = Reconciler(
         repository,
         executor,
+        retry_policy=retry_policy,
         artifact_manager=ArtifactManager(repository, storage),
         observability=observability,
     )
