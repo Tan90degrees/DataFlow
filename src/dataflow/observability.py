@@ -9,10 +9,12 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from time import perf_counter
 from typing import Any, Protocol
 
-_LOG_CONTEXT: ContextVar[dict[str, Any]] = ContextVar("dataflow_log_context", default={})
+_LOG_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
+    "dataflow_log_context",
+    default=None,
+)
 
 
 class Metrics(Protocol):
@@ -232,7 +234,7 @@ class Observability:
 
     @contextmanager
     def bind(self, **fields: Any) -> Iterator[None]:
-        current = dict(_LOG_CONTEXT.get())
+        current = dict(_LOG_CONTEXT.get() or {})
         current.update({key: value for key, value in fields.items() if value is not None})
         token = _LOG_CONTEXT.set(current)
         try:
@@ -241,7 +243,7 @@ class Observability:
             _LOG_CONTEXT.reset(token)
 
     def log(self, level: int, event: str, **fields: Any) -> None:
-        payload = dict(_LOG_CONTEXT.get())
+        payload = dict(_LOG_CONTEXT.get() or {})
         payload.update({key: value for key, value in fields.items() if value is not None})
         self.logger.log(level, event, extra={"dataflow": payload})
 
@@ -268,21 +270,6 @@ class Observability:
                 if value is not None:
                     span.set_attribute(key, _otel_value(value))
             yield span
-
-    @contextmanager
-    def timed_reconciliation(self) -> Iterator[dict[str, str]]:
-        started = perf_counter()
-        result = {"outcome": "unchanged"}
-        try:
-            yield result
-        except Exception:
-            result["outcome"] = "error"
-            raise
-        finally:
-            self.metrics.observe_reconciliation(
-                outcome=result["outcome"],
-                duration_seconds=perf_counter() - started,
-            )
 
 
 def _otel_value(value: Any) -> Any:
