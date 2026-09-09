@@ -81,6 +81,30 @@ rayjob_count() {
   kubectl get rayjobs -n "$NAMESPACE" -l "$selector" -o json | jq '.items | length'
 }
 
+cleanup_run_ray_resources() {
+  local run_id=$1
+  local selector="dataflow.io/run-id=$run_id"
+  local clusters=""
+  clusters="$(kubectl get rayjobs -n "$NAMESPACE" -l "$selector" -o json 2>/dev/null \
+    | jq -r '.items[].status.rayClusterName // empty' \
+    | sort -u)"
+
+  kubectl delete rayjobs -n "$NAMESPACE" -l "$selector" --ignore-not-found --wait=true
+
+  local cluster
+  while IFS= read -r cluster; do
+    [[ -n "$cluster" ]] || continue
+    for _ in $(seq 1 90); do
+      if ! kubectl get raycluster -n "$NAMESPACE" "$cluster" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 1
+    done
+    kubectl get raycluster -n "$NAMESPACE" "$cluster" >/dev/null 2>&1 \
+      && fail "RayCluster $cluster still exists after RayJob cleanup"
+  done <<<"$clusters"
+}
+
 wait_rayjob_succeeded() {
   local job_name=$1
   local timeout=${2:-600}
@@ -301,6 +325,9 @@ kubectl scale -n "$NAMESPACE" deployment/dataflow-controller --replicas=1
 kubectl rollout status -n "$NAMESPACE" deployment/dataflow-controller --timeout=180s
 wait_diag "$RUN_ID" '.status == "SUCCEEDED"' 'pipeline SUCCEEDED from durable checkpoint' 600 >/tmp/dataflow-e2e-success.json
 assert_s3_outputs "$RUN_ID"
+
+log "release completed Ray resources before starting cancellation scenario"
+cleanup_run_ray_resources "$RUN_ID"
 
 log "verify cancellation propagates to an active real RayJob"
 CANCEL_RUN_JSON="$(curl -fsS -X POST "$API_URL/v1/pipeline-runs" \
