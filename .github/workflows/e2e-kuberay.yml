@@ -76,3 +76,12 @@ jobs:
       - name: Dump Ray pod diagnostics
         if: failure()
         run: bash e2e/kuberay/dump-ray-diagnostics.sh
+
+      - name: Upload KubeRay diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kuberay-e2e-diagnostics
+          path: .artifacts/kuberay-diagnostics
+          if-no-files-found: warn
+          retention-days: 7
