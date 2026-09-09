@@ -93,6 +93,19 @@ def test_executor_preserves_operator_order_and_resources() -> None:
     assert backend.calls[1][2]["batch_size"] == 128
 
 
+def test_executor_injects_resolved_filesystem_for_s3_reads_and_writes() -> None:
+    backend = FakeBackend()
+    filesystem = object()
+
+    PlanExecutor(
+        backend,
+        filesystem_resolver=lambda path: filesystem if path.startswith("s3://") else None,
+    ).execute(make_plan())
+
+    assert backend.calls[0][2]["filesystem"] is filesystem
+    assert backend.calls[-1][2]["filesystem"] is filesystem
+
+
 def test_durable_writer_uses_attempt_specific_staging_uri() -> None:
     backend = FakeBackend()
 
