@@ -72,3 +72,7 @@ jobs:
         env:
           DATAFLOW_E2E_WORKER_RESTART: "0"
         run: bash e2e/kuberay/run.sh
+
+      - name: Dump Ray pod diagnostics
+        if: failure()
+        run: bash e2e/kuberay/dump-ray-diagnostics.sh
