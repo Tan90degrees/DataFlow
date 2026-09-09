@@ -99,10 +99,14 @@ def test_executor_injects_resolved_filesystem_for_s3_reads_and_writes() -> None:
 
     PlanExecutor(
         backend,
-        filesystem_resolver=lambda path: filesystem if path.startswith("s3://") else None,
+        filesystem_resolver=lambda path: (
+            (filesystem, path.removeprefix("s3://")) if path.startswith("s3://") else None
+        ),
     ).execute(make_plan())
 
+    assert backend.calls[0][1] == ("in",)
     assert backend.calls[0][2]["filesystem"] is filesystem
+    assert backend.calls[-1][1] == ("out",)
     assert backend.calls[-1][2]["filesystem"] is filesystem
 
 
