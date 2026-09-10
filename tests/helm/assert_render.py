@@ -51,7 +51,9 @@ def main() -> None:
 
     api_container = api_pod["containers"][0]
     controller_container = controller_pod["containers"][0]
+    expected_image = "ghcr.io/tan90degrees/dataflow-control-plane:0.1.0"
     for container in (api_container, controller_container):
+        assert container["image"] == expected_image
         assert container["readinessProbe"]
         assert container["livenessProbe"]
         assert container["resources"]["requests"]["cpu"]
