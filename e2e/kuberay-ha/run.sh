@@ -211,9 +211,10 @@ PIPELINE_JSON="$(curl -fsS -X POST "$API_URL/v1/pipelines" \
   -H 'content-type: application/json' \
   -d '{"name":"kuberay-ha-e2e","tenant_id":"e2e"}')"
 PIPELINE_ID="$(jq -r '.id' <<<"$PIPELINE_JSON")"
+jq '.name = "kuberay-ha-e2e"' "$BASE_E2E_DIR/pipeline.json" >/tmp/dataflow-ha-pipeline.json
 VERSION_JSON="$(curl -fsS -X POST "$API_URL/v1/pipelines/$PIPELINE_ID/versions" \
   -H 'content-type: application/json' \
-  --data-binary "@$BASE_E2E_DIR/pipeline.json")"
+  --data-binary '@/tmp/dataflow-ha-pipeline.json')"
 VERSION_ID="$(jq -r '.id' <<<"$VERSION_JSON")"
 RUN_JSON="$(curl -fsS -X POST "$API_URL/v1/pipeline-runs" \
   -H 'content-type: application/json' \
