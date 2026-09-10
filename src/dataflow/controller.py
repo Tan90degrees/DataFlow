@@ -100,7 +100,11 @@ class OrchestrationController:
                 self.reconcile_once()
                 sleep(poll_interval_seconds)
 
-        standby_seconds = standby_poll_interval_seconds or poll_interval_seconds
+        standby_seconds = (
+            poll_interval_seconds
+            if standby_poll_interval_seconds is None
+            else standby_poll_interval_seconds
+        )
         if standby_seconds <= 0:
             raise ValueError("standby_poll_interval_seconds must be positive")
 
