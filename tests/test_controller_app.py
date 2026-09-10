@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from dataflow import controller_app
 
 
@@ -21,7 +23,12 @@ def _install_fake_controller(monkeypatch: Any) -> tuple[FakeController, object]:
     controller = FakeController()
     leadership = object()
     monkeypatch.setenv("DATAFLOW_JSON_LOGS", "false")
-    monkeypatch.setattr(controller_app, "create_controller_from_env", lambda: controller)
+    monkeypatch.setenv("DATAFLOW_METRICS_ENABLED", "false")
+    monkeypatch.setattr(
+        controller_app,
+        "create_controller_from_env",
+        lambda *, observability=None: controller,
+    )
     monkeypatch.setattr(controller_app, "create_leadership_from_env", lambda: leadership)
     return controller, leadership
 
@@ -50,3 +57,24 @@ def test_main_uses_configured_poll_intervals_and_leadership(monkeypatch: Any) ->
             "standby_poll_interval_seconds": 3.0,
         }
     ]
+
+
+def test_controller_metrics_port_defaults_to_9091() -> None:
+    assert controller_app.controller_metrics_listen_port({}) == 9091
+
+
+def test_controller_metrics_port_uses_explicit_setting() -> None:
+    assert (
+        controller_app.controller_metrics_listen_port(
+            {"DATAFLOW_CONTROLLER_METRICS_LISTEN_PORT": "9191"}
+        )
+        == 9191
+    )
+
+
+@pytest.mark.parametrize("value", ["invalid", "0", "65536"])
+def test_controller_metrics_port_rejects_invalid_values(value: str) -> None:
+    with pytest.raises(RuntimeError, match="DATAFLOW_CONTROLLER_METRICS_LISTEN_PORT"):
+        controller_app.controller_metrics_listen_port(
+            {"DATAFLOW_CONTROLLER_METRICS_LISTEN_PORT": value}
+        )
