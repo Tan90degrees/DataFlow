@@ -48,7 +48,7 @@ def main() -> None:
     if os.environ.get("DATAFLOW_JSON_LOGS", "false").lower() in {"1", "true", "yes"}:
         configure_json_logging()
     uvicorn.run(
-        "dataflow.api:create_app_from_env",
+        "dataflow.authenticated_api:create_app_from_env",
         factory=True,
         host=os.environ.get("DATAFLOW_API_HOST", "0.0.0.0"),
         port=api_listen_port(),

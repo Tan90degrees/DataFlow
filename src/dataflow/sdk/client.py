@@ -44,6 +44,7 @@ class DataFlowClient:
         base_url: str,
         *,
         timeout: float = 30.0,
+        token: str | None = None,
         headers: dict[str, str] | None = None,
         http_client: httpx.Client | None = None,
     ) -> None:
@@ -51,7 +52,14 @@ class DataFlowClient:
             raise ValueError("base_url must not be empty")
         self._base_url = base_url.rstrip("/")
         self._owns_client = http_client is None
-        self._client = http_client or httpx.Client(timeout=timeout, headers=headers)
+        self._headers = dict(headers or {})
+        if token is not None:
+            if not token.strip():
+                raise ValueError("token must not be empty")
+            if any(name.lower() == "authorization" for name in self._headers):
+                raise ValueError("pass either token or an Authorization header, not both")
+            self._headers["Authorization"] = f"Bearer {token}"
+        self._client = http_client or httpx.Client(timeout=timeout)
 
     def __enter__(self) -> DataFlowClient:
         return self
@@ -204,6 +212,7 @@ class DataFlowClient:
             f"{self._base_url}{path}",
             json=json,
             params=params,
+            headers=self._headers or None,
         )
         if response.is_error:
             raise _api_error(response)
