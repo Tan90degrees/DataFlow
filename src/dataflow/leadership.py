@@ -61,6 +61,7 @@ class PostgresControllerLeadership:
                 return True
             self.release()
 
+        connection: Connection[Any] | None = None
         try:
             connection = psycopg.connect(
                 self._dsn,
@@ -74,6 +75,11 @@ class PostgresControllerLeadership:
                 )
                 row = cursor.fetchone()
         except psycopg.Error as error:
+            if connection is not None:
+                try:
+                    connection.close()
+                except psycopg.Error:
+                    pass
             raise LeadershipUnavailable("PostgreSQL leadership backend is unavailable") from error
 
         acquired = bool(row and row[0])
