@@ -34,20 +34,29 @@ class OrchestrationController:
         *,
         admission: PostgresAdmissionController | None = None,
         observability: Observability | None = None,
+        max_scheduled_runs_per_pass: int = 128,
     ) -> None:
+        if max_scheduled_runs_per_pass <= 0:
+            raise ValueError("max_scheduled_runs_per_pass must be positive")
         self._repository = repository
         self._scheduler = scheduler
         self._reconciler = reconciler
         self._admission = admission
         self._observability = observability or DEFAULT_OBSERVABILITY
+        self._max_scheduled_runs_per_pass = max_scheduled_runs_per_pass
+        self._schedule_cursor = 0
 
     def reconcile_once(self) -> None:
         active_runs = self._repository.list_active_runs()
+        scheduled_runs = self._select_scheduled_runs(active_runs)
+        selected_run_ids = {run.id for run in scheduled_runs}
         self._observability.info(
             "controller_reconcile_started",
             active_runs=len(active_runs),
+            scheduled_runs=len(scheduled_runs),
+            scheduler_run_limit=self._max_scheduled_runs_per_pass,
         )
-        for run in active_runs:
+        for run in scheduled_runs:
             with self._observability.bind(run_id=str(run.id)):
                 self._observability.info(
                     "controller_schedule_run",
@@ -56,7 +65,7 @@ class OrchestrationController:
                 self._scheduler.reconcile_run(run.id)
 
         admission_batch = self._reconcile_admission()
-        touched_runs: set[UUID] = {run.id for run in active_runs}
+        touched_runs: set[UUID] = set(selected_run_ids)
         recoverable = self._repository.list_recoverable_units()
         reconciled_units = 0
         for unit in recoverable:
@@ -76,13 +85,16 @@ class OrchestrationController:
                 reconciled_units += 1
 
         active_ids = {run.id for run in self._repository.list_active_runs()}
-        for run_id in sorted(touched_runs & active_ids, key=str):
+        reschedule_ids = touched_runs & active_ids & selected_run_ids
+        for run_id in sorted(reschedule_ids, key=str):
             with self._observability.bind(run_id=str(run_id)):
                 self._scheduler.reconcile_run(run_id)
 
         self._observability.info(
             "controller_reconcile_finished",
             active_runs=len(active_runs),
+            scheduled_runs=len(scheduled_runs),
+            scheduler_run_limit=self._max_scheduled_runs_per_pass,
             recoverable_units=len(recoverable),
             reconciled_units=reconciled_units,
             admission_enabled=admission_batch is not None,
@@ -166,6 +178,24 @@ class OrchestrationController:
         if self._admission is None:
             return None
         return self._admission.reconcile()
+
+    def _select_scheduled_runs(
+        self,
+        active_runs: list[PipelineRunRecord],
+    ) -> list[PipelineRunRecord]:
+        """Select a bounded rotating window so active runs cannot starve each other."""
+        if not active_runs:
+            self._schedule_cursor = 0
+            return []
+        if len(active_runs) <= self._max_scheduled_runs_per_pass:
+            self._schedule_cursor = 0
+            return active_runs
+
+        start = self._schedule_cursor % len(active_runs)
+        count = self._max_scheduled_runs_per_pass
+        selected = [active_runs[(start + offset) % len(active_runs)] for offset in range(count)]
+        self._schedule_cursor = (start + count) % len(active_runs)
+        return selected
 
 
 __all__ = ["ControllerRepository", "OrchestrationController"]
