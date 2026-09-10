@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Protocol
 from uuid import UUID
 
+from dataflow.admission import AdmissionBatch, PostgresAdmissionController
 from dataflow.leadership import ControllerLeadership, LeadershipUnavailable
 from dataflow.metadata.repository import ExecutionUnitRecord, PipelineRunRecord
 from dataflow.observability import DEFAULT_OBSERVABILITY, Observability
@@ -23,7 +24,7 @@ class ControllerRepository(Protocol):
 
 
 class OrchestrationController:
-    """Drive scheduler and reconciler passes from durable PostgreSQL state."""
+    """Drive scheduler, admission, and reconciler passes from durable PostgreSQL state."""
 
     def __init__(
         self,
@@ -31,11 +32,13 @@ class OrchestrationController:
         scheduler: Scheduler,
         reconciler: Reconciler,
         *,
+        admission: PostgresAdmissionController | None = None,
         observability: Observability | None = None,
     ) -> None:
         self._repository = repository
         self._scheduler = scheduler
         self._reconciler = reconciler
+        self._admission = admission
         self._observability = observability or DEFAULT_OBSERVABILITY
 
     def reconcile_once(self) -> None:
@@ -52,10 +55,14 @@ class OrchestrationController:
                 )
                 self._scheduler.reconcile_run(run.id)
 
+        admission_batch = self._reconcile_admission()
         touched_runs: set[UUID] = {run.id for run in active_runs}
         recoverable = self._repository.list_recoverable_units()
+        reconciled_units = 0
         for unit in recoverable:
             touched_runs.add(unit.pipeline_run_id)
+            if admission_batch is not None and unit.id not in admission_batch.admitted_unit_ids:
+                continue
             with self._observability.bind(
                 run_id=str(unit.pipeline_run_id),
                 unit_id=str(unit.id),
@@ -66,6 +73,7 @@ class OrchestrationController:
                     unit_status=unit.status.value,
                 )
                 self._reconciler.reconcile_unit(unit.id)
+                reconciled_units += 1
 
         active_ids = {run.id for run in self._repository.list_active_runs()}
         for run_id in sorted(touched_runs & active_ids, key=str):
@@ -76,6 +84,14 @@ class OrchestrationController:
             "controller_reconcile_finished",
             active_runs=len(active_runs),
             recoverable_units=len(recoverable),
+            reconciled_units=reconciled_units,
+            admission_enabled=admission_batch is not None,
+            admission_active_slots=(
+                admission_batch.active_slots if admission_batch is not None else None
+            ),
+            admission_queued=(
+                admission_batch.queued_units if admission_batch is not None else None
+            ),
         )
 
     def cancel_run(self, run_id: UUID) -> None:
@@ -145,6 +161,11 @@ class OrchestrationController:
                 leadership.release()
                 self._observability.metrics.observe_controller_leadership(is_leader=False)
                 self._observability.info("controller_leadership_released")
+
+    def _reconcile_admission(self) -> AdmissionBatch | None:
+        if self._admission is None:
+            return None
+        return self._admission.reconcile()
 
 
 __all__ = ["ControllerRepository", "OrchestrationController"]

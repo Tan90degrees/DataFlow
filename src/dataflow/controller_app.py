@@ -6,6 +6,7 @@ import argparse
 import os
 from collections.abc import Mapping, Sequence
 
+from dataflow.admission import AdmissionPolicy, PostgresAdmissionController
 from dataflow.api_repository import PostgresApiRepository
 from dataflow.artifact_manager import ArtifactManager
 from dataflow.artifacts import Boto3S3ObjectClient, S3ParquetArtifactStorage
@@ -58,10 +59,16 @@ def create_controller_from_env(
         artifact_manager=ArtifactManager(repository, storage),
         observability=obs,
     )
+    admission = PostgresAdmissionController(
+        dsn,
+        AdmissionPolicy.from_env(os.environ),
+        observability=obs,
+    )
     return OrchestrationController(
         repository,
         Scheduler(repository),
         reconciler,
+        admission=admission,
         observability=obs,
     )
 
