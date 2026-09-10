@@ -193,7 +193,10 @@ class OrchestrationController:
 
         start = self._schedule_cursor % len(active_runs)
         count = self._max_scheduled_runs_per_pass
-        selected = [active_runs[(start + offset) % len(active_runs)] for offset in range(count)]
+        selected = [
+            active_runs[(start + offset) % len(active_runs)]
+            for offset in range(count)
+        ]
         self._schedule_cursor = (start + count) % len(active_runs)
         return selected
 
