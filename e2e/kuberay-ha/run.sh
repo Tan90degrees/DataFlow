@@ -26,7 +26,9 @@ cleanup() {
 trap cleanup EXIT
 
 wait_http() {
-  local url=$1 timeout=${2:-120} deadline=$((SECONDS + timeout))
+  local url=$1
+  local timeout=${2:-120}
+  local deadline=$((SECONDS + timeout))
   until curl -fsS "$url" >/dev/null 2>&1; do
     (( SECONDS < deadline )) || fail "timed out waiting for $url"
     sleep 1
@@ -82,7 +84,9 @@ leader_pod() {
 }
 
 wait_for_leader() {
-  local timeout=${1:-60} deadline=$((SECONDS + timeout)) leader=""
+  local timeout=${1:-60}
+  local deadline=$((SECONDS + timeout))
+  local leader=""
   while (( SECONDS < deadline )); do
     leader="$(leader_pod || true)"
     if [[ -n "$leader" ]]; then
@@ -95,7 +99,10 @@ wait_for_leader() {
 }
 
 wait_for_specific_leader() {
-  local expected=$1 timeout=${2:-60} deadline=$((SECONDS + timeout)) actual=""
+  local expected=$1
+  local timeout=${2:-60}
+  local deadline=$((SECONDS + timeout))
+  local actual=""
   while (( SECONDS < deadline )); do
     actual="$(leader_pod || true)"
     if [[ "$actual" == "$expected" ]]; then
