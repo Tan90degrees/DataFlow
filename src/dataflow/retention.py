@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 import psycopg
@@ -171,7 +172,7 @@ class PostgresRetentionGc:
         dry_run: bool = False,
         now: datetime | None = None,
     ) -> GcReport:
-        current = now or datetime.now(timezone.utc)
+        current = now or datetime.now(UTC)
         if current.tzinfo is None:
             raise ValueError("now must be timezone-aware")
         report = GcReport(dry_run=dry_run)
