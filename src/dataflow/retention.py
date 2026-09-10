@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 from uuid import UUID
 
 import psycopg
@@ -20,6 +20,12 @@ from dataflow.state import TERMINAL_ATTEMPT_STATUSES, TERMINAL_RUN_STATUSES
 _GC_LOCK_KEY = 0x4743524554454E54
 _TERMINAL_ATTEMPTS = [status.value for status in TERMINAL_ATTEMPT_STATUSES]
 _TERMINAL_RUNS = [status.value for status in TERMINAL_RUN_STATUSES]
+_DEFAULT_RUN_SECONDS = 7 * 24 * 60 * 60
+_DEFAULT_EVENT_SECONDS = 30 * 24 * 60 * 60
+_DEFAULT_STAGING_SECONDS = 24 * 60 * 60
+_DEFAULT_ARTIFACT_SECONDS = 30 * 24 * 60 * 60
+_DEFAULT_SCAN_BATCH_SIZE = 256
+_DEFAULT_WORK_BATCH_SIZE = 64
 
 
 class GcTargetKind(StrEnum):
@@ -38,12 +44,12 @@ class GcTargetState(StrEnum):
 class RetentionPolicy:
     """Explicit retention windows for durable workflow data."""
 
-    terminal_run_seconds: int = 7 * 24 * 60 * 60
-    event_seconds: int = 30 * 24 * 60 * 60
-    staging_seconds: int = 24 * 60 * 60
-    committed_artifact_seconds: int = 30 * 24 * 60 * 60
-    scan_batch_size: int = 256
-    work_batch_size: int = 64
+    terminal_run_seconds: int = _DEFAULT_RUN_SECONDS
+    event_seconds: int = _DEFAULT_EVENT_SECONDS
+    staging_seconds: int = _DEFAULT_STAGING_SECONDS
+    committed_artifact_seconds: int = _DEFAULT_ARTIFACT_SECONDS
+    scan_batch_size: int = _DEFAULT_SCAN_BATCH_SIZE
+    work_batch_size: int = _DEFAULT_WORK_BATCH_SIZE
 
     def __post_init__(self) -> None:
         for name in (
@@ -65,37 +71,37 @@ class RetentionPolicy:
             terminal_run_seconds=_env_int(
                 env,
                 "DATAFLOW_RETENTION_RUN_SECONDS",
-                cls.terminal_run_seconds,
+                _DEFAULT_RUN_SECONDS,
                 minimum=0,
             ),
             event_seconds=_env_int(
                 env,
                 "DATAFLOW_RETENTION_EVENT_SECONDS",
-                cls.event_seconds,
+                _DEFAULT_EVENT_SECONDS,
                 minimum=0,
             ),
             staging_seconds=_env_int(
                 env,
                 "DATAFLOW_RETENTION_STAGING_SECONDS",
-                cls.staging_seconds,
+                _DEFAULT_STAGING_SECONDS,
                 minimum=0,
             ),
             committed_artifact_seconds=_env_int(
                 env,
                 "DATAFLOW_RETENTION_ARTIFACT_SECONDS",
-                cls.committed_artifact_seconds,
+                _DEFAULT_ARTIFACT_SECONDS,
                 minimum=0,
             ),
             scan_batch_size=_env_int(
                 env,
                 "DATAFLOW_GC_SCAN_BATCH_SIZE",
-                cls.scan_batch_size,
+                _DEFAULT_SCAN_BATCH_SIZE,
                 minimum=1,
             ),
             work_batch_size=_env_int(
                 env,
                 "DATAFLOW_GC_WORK_BATCH_SIZE",
-                cls.work_batch_size,
+                _DEFAULT_WORK_BATCH_SIZE,
                 minimum=1,
             ),
         )
@@ -139,7 +145,7 @@ class GcReport:
         }
 
 
-class ArtifactPrefixStorage:
+class ArtifactPrefixStorage(Protocol):
     def delete_prefix(self, uri: str) -> int: ...
 
 
@@ -195,8 +201,8 @@ class PostgresRetentionGc:
                 report.scanned_artifacts = len(rows)
                 for row in rows:
                     for kind, uri, eligible_at in self._target_specs(row, current):
-                        if self._upsert_target(row["id"], kind, uri, eligible_at):
-                            report.discovered_targets += 1
+                        self._upsert_target(row["id"], kind, uri, eligible_at)
+                        report.discovered_targets += 1
 
                 for target in self._load_work(current):
                     report.processed_targets += 1
@@ -362,9 +368,9 @@ class PostgresRetentionGc:
         kind: GcTargetKind,
         uri: str,
         eligible_at: datetime,
-    ) -> bool:
+    ) -> None:
         with self._connect() as connection:
-            row = connection.execute(
+            connection.execute(
                 """
                 INSERT INTO artifact_gc_targets (
                     artifact_id, target_kind, uri, eligible_at
@@ -374,11 +380,9 @@ class PostgresRetentionGc:
                     eligible_at = EXCLUDED.eligible_at,
                     updated_at = NOW()
                 WHERE artifact_gc_targets.state <> 'DELETED'
-                RETURNING (xmax = 0) AS inserted
                 """,
                 (artifact_id, kind.value, uri, eligible_at),
-            ).fetchone()
-        return bool(row and row["inserted"])
+            )
 
     def _load_work(self, now: datetime) -> list[GcTarget]:
         with self._connect() as connection:
