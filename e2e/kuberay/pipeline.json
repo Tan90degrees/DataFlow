@@ -25,7 +25,7 @@
         "callable": "dataflow.callables.slow_identity_batch",
         "batch_size": 256,
         "fn_kwargs": {
-          "seconds": 30
+          "seconds": 90
         }
       },
       "resources": {

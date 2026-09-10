@@ -41,6 +41,8 @@ class Metrics(Protocol):
 
     def observe_artifact_publication(self, *, outcome: str) -> None: ...
 
+    def observe_controller_leadership(self, *, is_leader: bool) -> None: ...
+
     def render(self) -> tuple[bytes, str] | None: ...
 
 
@@ -68,6 +70,9 @@ class NoopMetrics:
     def observe_artifact_publication(self, **_kwargs: Any) -> None:
         return None
 
+    def observe_controller_leadership(self, **_kwargs: Any) -> None:
+        return None
+
     def render(self) -> tuple[bytes, str] | None:
         return None
 
@@ -77,7 +82,7 @@ class PrometheusMetrics:
 
     def __init__(self) -> None:
         try:
-            from prometheus_client import CollectorRegistry, Counter, Histogram
+            from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
         except ImportError as error:  # pragma: no cover - exercised without optional extra
             raise RuntimeError(
                 "install DataFlow with the 'observability' extra to enable Prometheus"
@@ -137,6 +142,12 @@ class PrometheusMetrics:
             ("outcome",),
             registry=self._registry,
         )
+        self._controller_leader = Gauge(
+            "dataflow_controller_leader",
+            "Whether this DataFlow controller process currently owns leadership.",
+            registry=self._registry,
+        )
+        self._controller_leader.set(0)
 
     def observe_api_request(
         self,
@@ -169,6 +180,9 @@ class PrometheusMetrics:
 
     def observe_artifact_publication(self, *, outcome: str) -> None:
         self._artifact_publications.labels(outcome=outcome).inc()
+
+    def observe_controller_leadership(self, *, is_leader: bool) -> None:
+        self._controller_leader.set(1 if is_leader else 0)
 
     def render(self) -> tuple[bytes, str]:
         from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
