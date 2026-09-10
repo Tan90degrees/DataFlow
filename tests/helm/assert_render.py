@@ -45,16 +45,26 @@ def main() -> None:
     assert set(verbs) == {"get", "list", "watch", "create", "delete"}
     assert binding["subjects"][0]["kind"] == "ServiceAccount"
 
-    api_container = api["spec"]["template"]["spec"]["containers"][0]
-    controller_container = controller["spec"]["template"]["spec"]["containers"][0]
+    api_pod = api["spec"]["template"]["spec"]
+    controller_pod = controller["spec"]["template"]["spec"]
+    assert api_pod["serviceAccountName"] != controller_pod["serviceAccountName"]
+
+    api_container = api_pod["containers"][0]
+    controller_container = controller_pod["containers"][0]
+    for container in (api_container, controller_container):
+        assert container["readinessProbe"]
+        assert container["livenessProbe"]
+        assert container["resources"]["requests"]["cpu"]
+        assert container["resources"]["requests"]["memory"]
+
     api_env = _env(api_container)
     controller_env = _env(controller_container)
 
     db_ref = api_env["DATAFLOW_DATABASE_URL"]["valueFrom"]["secretKeyRef"]
     assert db_ref == {"name": "dataflow-db", "key": "database-url"}
     assert controller_env["DATAFLOW_DATABASE_URL"]["valueFrom"]["secretKeyRef"] == db_ref
-    assert controller_env["DATAFLOW_CONTROLLER_LOCK_NAMESPACE"]["value"]
-    assert controller_env["DATAFLOW_CONTROLLER_LOCK_KEY"]["value"]
+    assert controller_env["DATAFLOW_CONTROLLER_LOCK_NAMESPACE"]["value"] == "1145132097"
+    assert controller_env["DATAFLOW_CONTROLLER_LOCK_KEY"]["value"] == "1"
 
     secret_kinds = [item for item in resources if item.get("kind") == "Secret"]
     assert secret_kinds == [], "the production chart must not bundle credentials"

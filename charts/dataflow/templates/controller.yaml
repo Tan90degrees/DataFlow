@@ -59,9 +59,9 @@ spec:
             - name: DATAFLOW_CONTROLLER_METRICS_LISTEN_PORT
               value: {{ .Values.controller.metricsPort | quote }}
             - name: DATAFLOW_CONTROLLER_LOCK_NAMESPACE
-              value: {{ .Values.controller.lockNamespace | quote }}
+              value: {{ printf "%d" (int64 .Values.controller.lockNamespace) | quote }}
             - name: DATAFLOW_CONTROLLER_LOCK_KEY
-              value: {{ .Values.controller.lockKey | quote }}
+              value: {{ printf "%d" (int64 .Values.controller.lockKey) | quote }}
             - name: DATAFLOW_CONTROLLER_MAX_RUNS_PER_PASS
               value: {{ .Values.controller.maxRunsPerPass | quote }}
             - name: DATAFLOW_RETRY_MAX_ATTEMPTS
