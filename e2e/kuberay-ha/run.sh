@@ -104,7 +104,8 @@ wait_for_log_event() {
   local timeout=${3:-30}
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
-    if kubectl logs -n "$NAMESPACE" "$pod" --tail=300 2>/dev/null | grep -q "$event"; then
+    if kubectl logs -n "$NAMESPACE" "$pod" --since=10m 2>/dev/null \
+      | grep -F -- "$event" >/dev/null; then
       return 0
     fi
     sleep 0.25
