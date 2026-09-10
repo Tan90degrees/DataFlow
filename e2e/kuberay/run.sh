@@ -81,6 +81,23 @@ rayjob_count() {
   kubectl get rayjobs -n "$NAMESPACE" -l "$selector" -o json | jq '.items | length'
 }
 
+wait_for_resource_absent() {
+  local kind=$1
+  local name=$2
+  local timeout=${3:-90}
+  local deadline=$((SECONDS + timeout))
+
+  while (( SECONDS < deadline )); do
+    if ! kubectl get "$kind" -n "$NAMESPACE" "$name" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  kubectl get "$kind" -n "$NAMESPACE" "$name" -o wide || true
+  fail "$kind $name still exists after ${timeout}s"
+}
+
 cleanup_run_ray_resources() {
   local run_id=$1
   local selector="dataflow.io/run-id=$run_id"
@@ -94,15 +111,10 @@ cleanup_run_ray_resources() {
   local cluster
   while IFS= read -r cluster; do
     [[ -n "$cluster" ]] || continue
-    for _ in $(seq 1 90); do
-      if ! kubectl get raycluster -n "$NAMESPACE" "$cluster" >/dev/null 2>&1; then
-        break
-      fi
-      sleep 1
-    done
-    kubectl get raycluster -n "$NAMESPACE" "$cluster" >/dev/null 2>&1 \
-      && fail "RayCluster $cluster still exists after RayJob cleanup"
+    wait_for_resource_absent raycluster "$cluster" 90
   done <<<"$clusters"
+
+  return 0
 }
 
 wait_rayjob_succeeded() {
@@ -311,14 +323,7 @@ UPSTREAM_CLUSTER="$(kubectl get rayjob -n "$NAMESPACE" "$JOB2" -o jsonpath='{.st
 [[ -n "$UPSTREAM_CLUSTER" ]] || fail "upstream RayJob did not expose its RayCluster name"
 log "delete upstream RayJob/cluster after checkpoint publication"
 kubectl delete rayjob -n "$NAMESPACE" "$JOB2" --ignore-not-found --wait=true
-for _ in $(seq 1 90); do
-  if ! kubectl get raycluster -n "$NAMESPACE" "$UPSTREAM_CLUSTER" >/dev/null 2>&1; then
-    break
-  fi
-  sleep 1
-done
-kubectl get raycluster -n "$NAMESPACE" "$UPSTREAM_CLUSTER" >/dev/null 2>&1 \
-  && fail "upstream RayCluster still exists after RayJob deletion"
+wait_for_resource_absent raycluster "$UPSTREAM_CLUSTER" 90
 
 log "restart controller after upstream cluster is gone; downstream must read committed checkpoint"
 kubectl scale -n "$NAMESPACE" deployment/dataflow-controller --replicas=1
@@ -341,14 +346,7 @@ CANCEL_DIAG="$(wait_diag "$CANCEL_RUN_ID" '.status == "CANCELLED" and .units[0].
 if jq -e '.units[0].artifacts | any(.state == "COMMITTED")' <<<"$CANCEL_DIAG" >/dev/null; then
   fail "cancelled attempt exposed a committed artifact"
 fi
-for _ in $(seq 1 90); do
-  if ! kubectl get rayjob -n "$NAMESPACE" "$CANCEL_JOB" >/dev/null 2>&1; then
-    break
-  fi
-  sleep 1
-done
-kubectl get rayjob -n "$NAMESPACE" "$CANCEL_JOB" >/dev/null 2>&1 \
-  && fail "cancelled RayJob still exists"
+wait_for_resource_absent rayjob "$CANCEL_JOB" 90
 
 log "verify Prometheus surface remains available"
 curl -fsS "$API_URL/metrics" | grep -q '^dataflow_api_requests_total'
