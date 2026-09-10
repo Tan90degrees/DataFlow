@@ -2,8 +2,8 @@ nameOverride: ""
 fullnameOverride: ""
 
 image:
-  repository: dataflow-control-plane
-  tag: "0.1.0"
+  repository: ghcr.io/tan90degrees/dataflow-control-plane
+  tag: ""
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []

@@ -29,6 +29,7 @@ observability = [
   "prometheus-client>=0.26,<1",
 ]
 dev = [
+  "build>=1.2,<2",
   "fastapi>=0.115,<1",
   "httpx>=0.27,<1",
   "opentelemetry-api>=1.44,<2",
@@ -46,6 +47,7 @@ dataflow-migrate = "dataflow.metadata.migrations:main"
 dataflow-api = "dataflow.api_entrypoint:main"
 dataflow-controller = "dataflow.controller_app:main"
 dataflow-gc = "dataflow.gc_app:main"
+dataflow-check-release = "dataflow.release_contract:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dataflow"]
