@@ -12,16 +12,18 @@ from dataflow.artifacts import Boto3S3ObjectClient, S3ParquetArtifactStorage
 from dataflow.controller import OrchestrationController
 from dataflow.executor import RetryPolicy
 from dataflow.kuberay import KubeRayExecutor, KubernetesRayJobClient
+from dataflow.leadership import (
+    DEFAULT_LOCK_KEY,
+    DEFAULT_LOCK_NAMESPACE,
+    PostgresControllerLeadership,
+)
 from dataflow.observability import Observability, configure_json_logging
 from dataflow.reconciler import Reconciler
 from dataflow.scheduler import Scheduler
 
 
 def create_controller_from_env() -> OrchestrationController:
-    dsn = os.environ.get("DATAFLOW_DATABASE_URL")
-    if not dsn:
-        raise RuntimeError("DATAFLOW_DATABASE_URL is required")
-
+    dsn = _database_url()
     repository = PostgresApiRepository(dsn)
     observability = Observability.from_env()
     endpoint_url = os.environ.get("DATAFLOW_S3_ENDPOINT_URL")
@@ -60,6 +62,23 @@ def create_controller_from_env() -> OrchestrationController:
     )
 
 
+def create_leadership_from_env() -> PostgresControllerLeadership:
+    return PostgresControllerLeadership(
+        _database_url(),
+        lock_namespace=int(
+            os.environ.get("DATAFLOW_CONTROLLER_LOCK_NAMESPACE", str(DEFAULT_LOCK_NAMESPACE))
+        ),
+        lock_key=int(os.environ.get("DATAFLOW_CONTROLLER_LOCK_KEY", str(DEFAULT_LOCK_KEY))),
+    )
+
+
+def _database_url() -> str:
+    dsn = os.environ.get("DATAFLOW_DATABASE_URL")
+    if not dsn:
+        raise RuntimeError("DATAFLOW_DATABASE_URL is required")
+    return dsn
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run the DataFlow orchestration controller")
     parser.add_argument(
@@ -78,7 +97,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         return
 
     poll_seconds = float(os.environ.get("DATAFLOW_CONTROLLER_POLL_SECONDS", "2"))
-    controller.run_forever(poll_interval_seconds=poll_seconds)
+    standby_seconds = float(
+        os.environ.get("DATAFLOW_CONTROLLER_STANDBY_POLL_SECONDS", str(poll_seconds))
+    )
+    controller.run_forever(
+        poll_interval_seconds=poll_seconds,
+        leadership=create_leadership_from_env(),
+        standby_poll_interval_seconds=standby_seconds,
+    )
 
 
-__all__ = ["create_controller_from_env", "main"]
+__all__ = ["create_controller_from_env", "create_leadership_from_env", "main"]
