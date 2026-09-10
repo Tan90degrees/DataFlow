@@ -66,21 +66,17 @@ controller_pods_json() {
 }
 
 leader_pod() {
-  local ips pods ip pod
-  ips="$(kubectl exec -n "$NAMESPACE" deployment/postgres -- \
-    psql -U dataflow -d dataflow -Atc \
-    "SELECT client_addr::text FROM pg_stat_activity WHERE application_name = 'dataflow-controller-leader-election' ORDER BY backend_start" \
-    2>/dev/null || true)"
-  pods="$(controller_pods_json 2>/dev/null || true)"
-  while IFS= read -r ip; do
-    [[ -n "$ip" ]] || continue
-    pod="$(jq -r --arg ip "$ip" '.items[] | select(.status.podIP == $ip) | .metadata.name' <<<"$pods" | head -n1)"
-    if [[ -n "$pod" ]]; then
-      printf '%s\n' "$pod"
-      return 0
-    fi
-  done <<<"$ips"
-  return 1
+  local ip pod
+  ip="$(kubectl exec -n "$NAMESPACE" deployment/postgres -- \
+    psql -U dataflow -d dataflow -tA -c \
+    "SELECT client_addr::text FROM pg_stat_activity WHERE application_name = 'dataflow-controller-leader-election' ORDER BY backend_start LIMIT 1" \
+    2>/dev/null | tr -d '[:space:]' || true)"
+  [[ -n "$ip" ]] || return 1
+  pod="$(kubectl get pods -n "$NAMESPACE" -l "$CONTROLLER_SELECTOR" \
+    -o custom-columns='NAME:.metadata.name,IP:.status.podIP' --no-headers 2>/dev/null \
+    | awk -v expected_ip="$ip" '$2 == expected_ip && found == "" { found=$1 } END { if (found != "") print found }')"
+  [[ -n "$pod" ]] || return 1
+  printf '%s\n' "$pod"
 }
 
 wait_for_leader() {
