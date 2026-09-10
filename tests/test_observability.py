@@ -54,6 +54,7 @@ def test_prometheus_metrics_use_low_cardinality_labels() -> None:
     metrics.observe_unit_retry(error_code="RESOURCE_ERROR")
     metrics.observe_unit_terminal(status="SUCCEEDED", duration_seconds=3.5)
     metrics.observe_artifact_publication(outcome="committed")
+    metrics.observe_controller_leadership(is_leader=True)
 
     rendered = metrics.render()
     assert rendered is not None
@@ -63,6 +64,7 @@ def test_prometheus_metrics_use_low_cardinality_labels() -> None:
     assert "dataflow_reconciliation_errors_total" in body
     assert "dataflow_execution_unit_retries_total" in body
     assert "dataflow_artifact_publications_total" in body
+    assert "dataflow_controller_leader 1.0" in body
     assert "run-123" not in body
     assert "unit-456" not in body
 
