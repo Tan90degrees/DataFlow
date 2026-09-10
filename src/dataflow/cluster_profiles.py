@@ -98,6 +98,8 @@ class ClusterProfileSpec(BaseModel):
     service_account: str | None = Field(default=None, min_length=1)
     priority_class_name: str | None = Field(default=None, min_length=1)
     queue: str | None = Field(default=None, min_length=1)
+    pod_env: dict[str, str] = Field(default_factory=dict)
+    secret_env_from: list[str] = Field(default_factory=list)
     head: HeadGroupProfile = Field(default_factory=HeadGroupProfile)
     worker_groups: list[WorkerGroupProfile] = Field(min_length=1)
     autoscaling: AutoscalingProfile = Field(default_factory=AutoscalingProfile)
@@ -107,6 +109,8 @@ class ClusterProfileSpec(BaseModel):
         names = [group.name for group in self.worker_groups]
         if len(names) != len(set(names)):
             raise ValueError("worker group names must be unique")
+        if len(self.secret_env_from) != len(set(self.secret_env_from)):
+            raise ValueError("secret_env_from entries must be unique")
         if self.autoscaling.enabled and not any(
             group.max_replicas > 0 for group in self.worker_groups
         ):

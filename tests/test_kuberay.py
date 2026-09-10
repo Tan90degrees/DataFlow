@@ -66,7 +66,7 @@ def test_render_rayjob_contains_traceable_identity_and_runtime() -> None:
     assert "DATAFLOW_ATTEMPT_NUMBER: '2'" in runtime_env
 
 
-def test_attempt_names_remain_unique_when_identity_is_long() -> None:
+def test_attempt_names_remain_unique_within_kuberay_limit() -> None:
     plan = make_plan()
     plan.run_id = "run-" + "x" * 80
     plan.unit_id = "unit-" + "y" * 80
@@ -74,11 +74,24 @@ def test_attempt_names_remain_unique_when_identity_is_long() -> None:
     first = rayjob_name(plan, 1)
     second = rayjob_name(plan, 2)
 
-    assert len(first) <= 63
-    assert len(second) <= 63
+    assert len(first) <= 47
+    assert len(second) <= 47
     assert first.endswith("-a001")
     assert second.endswith("-a002")
     assert first != second
+
+
+def test_uuid_run_name_fits_kuberay_limit_and_is_deterministic() -> None:
+    plan = make_plan()
+    plan.run_id = "11ee92ad-1006-427c-a22d-7eeadd39f85f"
+    plan.unit_id = "unit-001"
+
+    first = rayjob_name(plan, 1)
+
+    assert len(first) <= 47
+    assert first == rayjob_name(plan, 1)
+    assert first.endswith("-a001")
+    assert first != rayjob_name(plan, 2)
 
 
 def test_submit_is_idempotent_for_same_attempt() -> None:
@@ -107,3 +120,24 @@ def test_existing_terminal_rayjob_is_observed_without_recreation() -> None:
 
     assert observed.state is ExternalJobState.SUCCEEDED
     assert client.create_count == 1
+
+
+def test_kuberay_validation_failure_is_terminal_invalid_plan() -> None:
+    client = FakeRayJobClient()
+    executor = KubeRayExecutor(client)
+    plan = make_plan()
+    executor.submit(plan, attempt_number=1)
+    key = (plan.runtime.namespace, rayjob_name(plan, 1))
+    client.resources[key]["status"] = {
+        "jobDeploymentStatus": "ValidationFailed",
+        "reason": "ValidationFailed",
+        "message": "invalid RayJob metadata",
+    }
+
+    observed = executor.get(plan, attempt_number=1)
+
+    assert observed is not None
+    assert observed.state is ExternalJobState.FAILED
+    assert observed.error_code == "INVALID_PLAN"
+    assert observed.error_message == "invalid RayJob metadata"
+    assert observed.retryable is False

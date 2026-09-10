@@ -1,0 +1,50 @@
+{
+  "api_version": "dataflow.io/v1alpha1",
+  "kind": "ClusterProfile",
+  "name": "e2e-cpu",
+  "ray_version": "2.58.0",
+  "kubernetes_namespace": "dataflow-e2e",
+  "service_account": "dataflow-ray",
+  "pod_env": {
+    "AWS_DEFAULT_REGION": "us-east-1",
+    "DATAFLOW_S3_ENDPOINT_URL": "http://minio.dataflow-e2e.svc.cluster.local:9000"
+  },
+  "secret_env_from": [
+    "dataflow-s3"
+  ],
+  "head": {
+    "resources": {
+      "cpu": 1,
+      "memory_bytes": 3221225472,
+      "gpu": 0
+    },
+    "placement": {
+      "node_selector": {},
+      "tolerations": []
+    }
+  },
+  "worker_groups": [
+    {
+      "name": "cpu-workers",
+      "replicas": 1,
+      "min_replicas": 1,
+      "max_replicas": 1,
+      "resources": {
+        "cpu": 1,
+        "memory_bytes": 3221225472,
+        "gpu": 0
+      },
+      "gpu_resource_name": "nvidia.com/gpu",
+      "placement": {
+        "node_selector": {},
+        "tolerations": []
+      },
+      "autoscaler_priority": 0
+    }
+  ],
+  "autoscaling": {
+    "enabled": false,
+    "version": "v2",
+    "idle_timeout_seconds": 60
+  }
+}

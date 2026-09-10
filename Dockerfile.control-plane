@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /opt/dataflow
+
+COPY pyproject.toml README.md ./
+COPY src ./src
+
+RUN python -m pip install --no-cache-dir '.[api,control-plane,artifacts,observability]'
+
+RUN useradd --create-home --uid 10001 dataflow
+USER dataflow
+
+ENTRYPOINT []
+CMD ["dataflow-api"]

@@ -1,0 +1,348 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dataflow-e2e
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dataflow-s3
+  namespace: dataflow-e2e
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: dataflow
+  AWS_SECRET_ACCESS_KEY: dataflow-secret
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dataflow-db
+  namespace: dataflow-e2e
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: dataflow
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dataflow-controller
+  namespace: dataflow-e2e
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dataflow-ray
+  namespace: dataflow-e2e
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dataflow-rayjob-controller
+  namespace: dataflow-e2e
+rules:
+  - apiGroups: ["ray.io"]
+    resources: ["rayjobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dataflow-rayjob-controller
+  namespace: dataflow-e2e
+subjects:
+  - kind: ServiceAccount
+    name: dataflow-controller
+    namespace: dataflow-e2e
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dataflow-rayjob-controller
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: dataflow-e2e
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_DB
+              value: dataflow
+            - name: POSTGRES_USER
+              value: dataflow
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dataflow-db
+                  key: POSTGRES_PASSWORD
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "dataflow", "-d", "dataflow"]
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: dataflow-e2e
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: dataflow-e2e
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+          args: ["server", "/data", "--console-address", ":9001"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: dataflow-s3
+                  key: AWS_ACCESS_KEY_ID
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dataflow-s3
+                  key: AWS_SECRET_ACCESS_KEY
+          ports:
+            - containerPort: 9000
+            - containerPort: 9001
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: dataflow-e2e
+spec:
+  selector:
+    app: minio
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: 9000
+    - name: console
+      port: 9001
+      targetPort: 9001
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dataflow-migrate
+  namespace: dataflow-e2e
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: dataflow-control-plane:e2e
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args: ["dataflow-migrate --dsn \"$DATAFLOW_DATABASE_URL\""]
+          env:
+            - name: DATAFLOW_DATABASE_URL
+              value: postgresql://dataflow:dataflow@postgres:5432/dataflow
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-parquet
+  namespace: dataflow-e2e
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: dataflow-runtime:e2e
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-c"]
+          args:
+            - |
+              import os
+              import time
+              import pyarrow as pa
+              import pyarrow.parquet as pq
+              from pyarrow import fs
+
+              last_error = None
+              for attempt in range(60):
+                  try:
+                      store = fs.S3FileSystem(
+                          access_key=os.environ["AWS_ACCESS_KEY_ID"],
+                          secret_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+                          region="us-east-1",
+                          scheme="http",
+                          endpoint_override="minio:9000",
+                          allow_bucket_creation=True,
+                      )
+                      store.create_dir("dataflow-e2e")
+                      table = pa.table({
+                          "value": list(range(256)),
+                          "group": [value % 8 for value in range(256)],
+                      })
+                      pq.write_table(
+                          table,
+                          "dataflow-e2e/input/data.parquet",
+                          filesystem=store,
+                      )
+                      break
+                  except Exception as error:
+                      last_error = error
+                      if attempt == 59:
+                          raise
+                      time.sleep(2)
+              print("seeded input parquet", last_error)
+          envFrom:
+            - secretRef:
+                name: dataflow-s3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dataflow-api
+  namespace: dataflow-e2e
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dataflow-api
+  template:
+    metadata:
+      labels:
+        app: dataflow-api
+    spec:
+      containers:
+        - name: api
+          image: dataflow-control-plane:e2e
+          imagePullPolicy: IfNotPresent
+          command: ["dataflow-api"]
+          env:
+            - name: DATAFLOW_DATABASE_URL
+              value: postgresql://dataflow:dataflow@postgres:5432/dataflow
+            - name: DATAFLOW_METRICS_ENABLED
+              value: "true"
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dataflow-api
+  namespace: dataflow-e2e
+spec:
+  selector:
+    app: dataflow-api
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dataflow-controller
+  namespace: dataflow-e2e
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dataflow-controller
+  template:
+    metadata:
+      labels:
+        app: dataflow-controller
+    spec:
+      serviceAccountName: dataflow-controller
+      containers:
+        - name: controller
+          image: dataflow-control-plane:e2e
+          imagePullPolicy: IfNotPresent
+          command: ["dataflow-controller"]
+          envFrom:
+            - secretRef:
+                name: dataflow-s3
+          env:
+            - name: DATAFLOW_DATABASE_URL
+              value: postgresql://dataflow:dataflow@postgres:5432/dataflow
+            - name: DATAFLOW_S3_ENDPOINT_URL
+              value: http://minio:9000
+            - name: AWS_DEFAULT_REGION
+              value: us-east-1
+            - name: DATAFLOW_CONTROLLER_POLL_SECONDS
+              value: "10"
+            - name: DATAFLOW_RETRY_MAX_ATTEMPTS
+              value: "3"
+            - name: DATAFLOW_RETRY_INITIAL_BACKOFF_SECONDS
+              value: "0"
+            - name: DATAFLOW_METRICS_ENABLED
+              value: "false"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
