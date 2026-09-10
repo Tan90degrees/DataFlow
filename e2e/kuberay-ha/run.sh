@@ -68,7 +68,7 @@ controller_pods_json() {
 postgres_leader_ip() {
   kubectl exec -n "$NAMESPACE" deployment/postgres -- \
     psql -U dataflow -d dataflow -tA -c \
-    "SELECT client_addr::text FROM pg_stat_activity WHERE application_name = 'dataflow-controller-leader-election' ORDER BY backend_start LIMIT 1" \
+    "SELECT host(client_addr) FROM pg_stat_activity WHERE application_name = 'dataflow-controller-leader-election' ORDER BY backend_start LIMIT 1" \
     2>/dev/null | sed -n '1p' | tr -d '\r\n ' || true
 }
 
