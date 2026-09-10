@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dataflow.fullname" . }}-controller
+  labels:
+    {{- include "dataflow.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  replicas: {{ .Values.controller.replicaCount }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "dataflow.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "dataflow.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: controller
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "dataflow.controllerServiceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: controller
+          image: {{ include "dataflow.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["dataflow-controller"]
+          env:
+            - name: DATAFLOW_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "database.existingSecret is required" .Values.database.existingSecret }}
+                  key: {{ .Values.database.urlKey }}
+            - name: DATAFLOW_S3_ENDPOINT_URL
+              value: {{ .Values.s3.endpointUrl | quote }}
+            - name: AWS_DEFAULT_REGION
+              value: {{ .Values.s3.region | quote }}
+            - name: DATAFLOW_CONTROLLER_POLL_SECONDS
+              value: {{ .Values.controller.pollSeconds | quote }}
+            - name: DATAFLOW_CONTROLLER_STANDBY_POLL_SECONDS
+              value: {{ .Values.controller.standbyPollSeconds | quote }}
+            - name: DATAFLOW_CONTROLLER_METRICS_LISTEN_PORT
+              value: {{ .Values.controller.metricsPort | quote }}
+            - name: DATAFLOW_CONTROLLER_LOCK_NAMESPACE
+              value: {{ printf "%d" (int64 .Values.controller.lockNamespace) | quote }}
+            - name: DATAFLOW_CONTROLLER_LOCK_KEY
+              value: {{ printf "%d" (int64 .Values.controller.lockKey) | quote }}
+            - name: DATAFLOW_CONTROLLER_MAX_RUNS_PER_PASS
+              value: {{ .Values.controller.maxRunsPerPass | quote }}
+            - name: DATAFLOW_RETRY_MAX_ATTEMPTS
+              value: {{ .Values.controller.retry.maxAttempts | quote }}
+            - name: DATAFLOW_RETRY_INITIAL_BACKOFF_SECONDS
+              value: {{ .Values.controller.retry.initialBackoffSeconds | quote }}
+            - name: DATAFLOW_RETRY_MULTIPLIER
+              value: {{ .Values.controller.retry.multiplier | quote }}
+            - name: DATAFLOW_RETRY_MAX_BACKOFF_SECONDS
+              value: {{ .Values.controller.retry.maxBackoffSeconds | quote }}
+            - name: DATAFLOW_ADMISSION_PROFILE_LIMITS
+              value: {{ .Values.controller.admission.profileLimits | quote }}
+            - name: DATAFLOW_ADMISSION_MAX_NEW_PER_PASS
+              value: {{ .Values.controller.admission.maxNewPerPass | quote }}
+            {{- if ne (toString .Values.controller.admission.globalLimit) "" }}
+            - name: DATAFLOW_ADMISSION_GLOBAL_LIMIT
+              value: {{ .Values.controller.admission.globalLimit | quote }}
+            {{- end }}
+          {{- if .Values.s3.existingSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.s3.existingSecret }}
+          {{- end }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.controller.metricsPort }}
+          readinessProbe:
+            tcpSocket:
+              port: metrics
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: metrics
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dataflow.fullname" . }}-controller-metrics
+  labels:
+    {{- include "dataflow.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "dataflow.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: controller
+  ports:
+    - name: metrics
+      port: {{ .Values.controller.metricsPort }}
+      targetPort: metrics
