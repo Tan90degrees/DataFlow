@@ -65,18 +65,38 @@ controller_pods_json() {
   kubectl get pods -n "$NAMESPACE" -l "$CONTROLLER_SELECTOR" -o json
 }
 
-leader_pod() {
-  local ip pod
-  ip="$(kubectl exec -n "$NAMESPACE" deployment/postgres -- \
+postgres_leader_ip() {
+  kubectl exec -n "$NAMESPACE" deployment/postgres -- \
     psql -U dataflow -d dataflow -tA -c \
     "SELECT client_addr::text FROM pg_stat_activity WHERE application_name = 'dataflow-controller-leader-election' ORDER BY backend_start LIMIT 1" \
-    2>/dev/null | tr -d '[:space:]' || true)"
+    2>/dev/null | sed -n '1p' | tr -d '\r\n ' || true
+}
+
+leader_pod() {
+  local ip resource pod pod_ip
+  ip="$(postgres_leader_ip)"
   [[ -n "$ip" ]] || return 1
-  pod="$(kubectl get pods -n "$NAMESPACE" -l "$CONTROLLER_SELECTOR" \
-    -o custom-columns='NAME:.metadata.name,IP:.status.podIP' --no-headers 2>/dev/null \
-    | awk -v expected_ip="$ip" '$2 == expected_ip && found == "" { found=$1 } END { if (found != "") print found }')"
-  [[ -n "$pod" ]] || return 1
-  printf '%s\n' "$pod"
+  while IFS= read -r resource; do
+    [[ -n "$resource" ]] || continue
+    pod="${resource#pod/}"
+    pod_ip="$(kubectl get pod -n "$NAMESPACE" "$pod" -o jsonpath='{.status.podIP}' 2>/dev/null || true)"
+    if [[ "$pod_ip" == "$ip" ]]; then
+      printf '%s\n' "$pod"
+      return 0
+    fi
+  done < <(kubectl get pods -n "$NAMESPACE" -l "$CONTROLLER_SELECTOR" -o name 2>/dev/null || true)
+  return 1
+}
+
+print_leader_mapping_debug() {
+  local resource pod pod_ip
+  printf '[ha-e2e] PostgreSQL leader IP: %s\n' "$(postgres_leader_ip)" >&2
+  while IFS= read -r resource; do
+    [[ -n "$resource" ]] || continue
+    pod="${resource#pod/}"
+    pod_ip="$(kubectl get pod -n "$NAMESPACE" "$pod" -o jsonpath='{.status.podIP}' 2>/dev/null || true)"
+    printf '[ha-e2e] controller pod/IP: %s %s\n' "$pod" "${pod_ip:-none}" >&2
+  done < <(kubectl get pods -n "$NAMESPACE" -l "$CONTROLLER_SELECTOR" -o name 2>/dev/null || true)
 }
 
 wait_for_leader() {
@@ -91,6 +111,7 @@ wait_for_leader() {
     fi
     sleep 0.5
   done
+  print_leader_mapping_debug
   fail "no chart controller acquired PostgreSQL leadership"
 }
 
@@ -107,6 +128,7 @@ wait_for_specific_leader() {
     fi
     sleep 0.25
   done
+  print_leader_mapping_debug
   fail "expected standby $expected to take leadership; current leader is ${actual:-none}"
 }
 
