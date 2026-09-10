@@ -99,6 +99,19 @@ print_leader_mapping_debug() {
   done < <(kubectl get pods -n "$NAMESPACE" -l "$CONTROLLER_SELECTOR" -o name 2>/dev/null || true)
 }
 
+wait_for_log_event() {
+  local pod=$1 event=$2
+  local timeout=${3:-30}
+  local deadline=$((SECONDS + timeout))
+  while (( SECONDS < deadline )); do
+    if kubectl logs -n "$NAMESPACE" "$pod" --tail=300 2>/dev/null | grep -q "$event"; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  fail "pod $pod did not report $event"
+}
+
 wait_for_leader() {
   local timeout=${1:-60}
   local deadline=$((SECONDS + timeout))
@@ -182,10 +195,8 @@ else
 fi
 log "initial leader=$INITIAL_LEADER standby=$INITIAL_STANDBY"
 
-kubectl logs -n "$NAMESPACE" "$INITIAL_LEADER" --tail=200 | grep -q controller_leadership_acquired \
-  || fail "leader pod did not report leadership acquisition"
-kubectl logs -n "$NAMESPACE" "$INITIAL_STANDBY" --tail=200 | grep -q controller_standby \
-  || fail "standby pod did not report standby state"
+wait_for_log_event "$INITIAL_LEADER" controller_leadership_acquired 30
+wait_for_log_event "$INITIAL_STANDBY" controller_standby 30
 
 kubectl port-forward -n "$NAMESPACE" service/dataflow-ha-api "$API_PORT:8080" \
   >/tmp/dataflow-ha-e2e-port-forward.log 2>&1 &
@@ -218,8 +229,7 @@ log "kill the elected controller during active execution"
 kubectl delete pod -n "$NAMESPACE" "$INITIAL_LEADER" --wait=true
 TAKEOVER_LEADER="$(wait_for_specific_leader "$INITIAL_STANDBY" 60)"
 log "standby takeover confirmed: $TAKEOVER_LEADER"
-kubectl logs -n "$NAMESPACE" "$TAKEOVER_LEADER" --tail=300 | grep -q controller_leadership_acquired \
-  || fail "standby did not log leadership acquisition"
+wait_for_log_event "$TAKEOVER_LEADER" controller_leadership_acquired 30
 
 log "prove failover did not duplicate or retry the active RayJob"
 for _ in $(seq 1 20); do
