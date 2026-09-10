@@ -54,10 +54,17 @@ controller_leadership_released
 controller_leadership_unavailable
 ```
 
-When Prometheus metrics are enabled, the process-local registry contains:
+When Prometheus metrics are enabled, every long-lived controller starts a process-local metrics listener. Configure it with:
+
+```text
+DATAFLOW_CONTROLLER_METRICS_HOST=0.0.0.0
+DATAFLOW_CONTROLLER_METRICS_LISTEN_PORT=9091
+```
+
+The listener serves `/metrics` from the same registry used by controller reconciliation and leadership instrumentation. It includes:
 
 ```text
 dataflow_controller_leader
 ```
 
-The elected process reports `1`; standby processes report `0`. Leadership metrics contain no run, unit, attempt, or job identifiers.
+The elected process reports `1`; standby processes report `0`. Leadership metrics contain no run, unit, attempt, or job identifiers. When `DATAFLOW_METRICS_ENABLED=false`, the controller does not start the metrics listener.
