@@ -11,7 +11,7 @@ lock. The second lock protects the narrow failover overlap window from over-admi
 
 ## Configuration
 
-The controller reads three environment variables:
+The controller reads four environment variables relevant to admission and scheduler fan-out:
 
 - `DATAFLOW_ADMISSION_GLOBAL_LIMIT`: maximum admitted units across all ClusterProfiles. Omit it
   for no global capacity ceiling.
@@ -20,9 +20,23 @@ The controller reads three environment variables:
   no profile-specific ceiling.
 - `DATAFLOW_ADMISSION_MAX_NEW_PER_PASS`: maximum number of new admissions made in one
   controller reconciliation pass. Defaults to `32` even when capacity itself is unlimited.
+- `DATAFLOW_CONTROLLER_MAX_RUNS_PER_PASS`: maximum number of active PipelineRuns sent through
+  scheduler reconciliation in one controller pass. Defaults to `128`.
 
-A limit of `0` intentionally blocks new admissions at that scope while preserving already
-running/recovered work.
+An admission limit of `0` intentionally blocks new admissions at that scope while preserving
+already running/recovered work. `DATAFLOW_CONTROLLER_MAX_RUNS_PER_PASS` must be positive.
+
+## Bounded scheduler work
+
+The controller applies the run limit as a rotating window over the stable active-run ordering.
+When more runs are active than fit in one pass, the next pass resumes at the next run instead
+of repeatedly selecting the first N. This bounds scheduler CPU/database work while ensuring a
+long-lived run near the front of the ordering cannot starve later runs.
+
+The same selected window is used for the post-reconcile scheduler pass, so one controller pass
+performs at most two scheduler reconciliations per selected run. Admission fairness remains
+separate and durable in PostgreSQL; the scheduler cursor only determines which runs receive
+DAG state advancement in a given pass.
 
 ## Slot lifetime
 
@@ -66,4 +80,5 @@ Admission transitions append durable events to the existing run event stream:
 
 Each controller pass also emits an `admission_reconciled` structured log containing active
 slot counts, per-profile counts, newly admitted work, queued/throttled work, recovered slots,
-released slots, and the configured global/per-pass limits.
+released slots, and the configured global/per-pass limits. Controller reconcile logs include
+both the active-run count and the number of runs selected by the scheduler window.
