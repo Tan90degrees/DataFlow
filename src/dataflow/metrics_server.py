@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import type
 
 from dataflow.observability import Metrics
 
