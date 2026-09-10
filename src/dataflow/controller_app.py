@@ -70,6 +70,9 @@ def create_controller_from_env(
         reconciler,
         admission=admission,
         observability=obs,
+        max_scheduled_runs_per_pass=int(
+            os.environ.get("DATAFLOW_CONTROLLER_MAX_RUNS_PER_PASS", "128")
+        ),
     )
 
 
