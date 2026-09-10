@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Protocol
 from uuid import UUID
 
+from dataflow.leadership import ControllerLeadership, LeadershipUnavailable
 from dataflow.metadata.repository import ExecutionUnitRecord, PipelineRunRecord
 from dataflow.observability import DEFAULT_OBSERVABILITY, Observability
 from dataflow.reconciler import Reconciler
@@ -88,13 +89,58 @@ class OrchestrationController:
         self,
         *,
         poll_interval_seconds: float = 5.0,
+        leadership: ControllerLeadership | None = None,
+        standby_poll_interval_seconds: float | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         if poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds must be positive")
+        if leadership is None:
+            while True:
+                self.reconcile_once()
+                sleep(poll_interval_seconds)
+
+        standby_seconds = standby_poll_interval_seconds or poll_interval_seconds
+        if standby_seconds <= 0:
+            raise ValueError("standby_poll_interval_seconds must be positive")
+
+        standby_reported = False
         while True:
-            self.reconcile_once()
-            sleep(poll_interval_seconds)
+            try:
+                acquired = leadership.try_acquire()
+            except LeadershipUnavailable as error:
+                self._observability.metrics.observe_controller_leadership(is_leader=False)
+                if not standby_reported:
+                    self._observability.warning(
+                        "controller_leadership_unavailable",
+                        error=str(error),
+                    )
+                    standby_reported = True
+                sleep(standby_seconds)
+                continue
+
+            if not acquired:
+                self._observability.metrics.observe_controller_leadership(is_leader=False)
+                if not standby_reported:
+                    self._observability.info("controller_standby")
+                    standby_reported = True
+                sleep(standby_seconds)
+                continue
+
+            standby_reported = False
+            self._observability.metrics.observe_controller_leadership(is_leader=True)
+            self._observability.info("controller_leadership_acquired")
+            try:
+                while leadership.is_current():
+                    self.reconcile_once()
+                    if not leadership.is_current():
+                        self._observability.warning("controller_leadership_lost")
+                        break
+                    sleep(poll_interval_seconds)
+            finally:
+                leadership.release()
+                self._observability.metrics.observe_controller_leadership(is_leader=False)
+                self._observability.info("controller_leadership_released")
 
 
 __all__ = ["ControllerRepository", "OrchestrationController"]
