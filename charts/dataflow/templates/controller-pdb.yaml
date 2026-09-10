@@ -1,0 +1,15 @@
+{{- if and .Values.controller.podDisruptionBudget.enabled (gt (int .Values.controller.replicaCount) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "dataflow.fullname" . }}-controller
+  labels:
+    {{- include "dataflow.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.controller.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "dataflow.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: controller
+{{- end }}
