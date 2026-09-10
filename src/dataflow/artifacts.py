@@ -316,15 +316,20 @@ class S3ParquetArtifactStorage:
         )
 
     def abort(self, staging_uri: str) -> None:
-        bucket, prefix = _parse_s3_uri(staging_uri)
+        self._delete_prefix(staging_uri, error_code="ARTIFACT_ABORT_FAILED")
+
+    def delete_prefix(self, uri: str) -> int:
+        """Delete every object under a non-root S3 URI; repeating an empty delete is safe."""
+        return self._delete_prefix(uri, error_code="ARTIFACT_GC_DELETE_FAILED")
+
+    def _delete_prefix(self, uri: str, *, error_code: str) -> int:
+        bucket, prefix = _parse_s3_uri(uri)
         try:
             objects = self._client.list_objects(bucket, _directory_prefix(prefix))
             self._client.delete_objects(bucket=bucket, keys=[item.key for item in objects])
+            return len(objects)
         except Exception as error:
-            raise ArtifactCommitError(
-                str(error),
-                error_code="ARTIFACT_ABORT_FAILED",
-            ) from error
+            raise ArtifactCommitError(str(error), error_code=error_code) from error
 
 
 def committed_artifact_uri(base_uri: str, run_id: str, node_id: str) -> str:

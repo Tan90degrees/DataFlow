@@ -111,6 +111,7 @@ def test_migrations_are_idempotent(postgres_dsn: str) -> None:
         ("0002_artifacts.sql",),
         ("0003_cluster_profiles.sql",),
         ("0004_execution_admissions.sql",),
+        ("0005_retention_gc.sql",),
     ]
 
 

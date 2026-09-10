@@ -43,6 +43,16 @@ class Metrics(Protocol):
 
     def observe_controller_leadership(self, *, is_leader: bool) -> None: ...
 
+    def observe_gc_target(
+        self,
+        *,
+        target: str,
+        outcome: str,
+        objects_deleted: int,
+    ) -> None: ...
+
+    def observe_gc_event_prune(self, *, count: int) -> None: ...
+
     def render(self) -> tuple[bytes, str] | None: ...
 
 
@@ -71,6 +81,12 @@ class NoopMetrics:
         return None
 
     def observe_controller_leadership(self, **_kwargs: Any) -> None:
+        return None
+
+    def observe_gc_target(self, **_kwargs: Any) -> None:
+        return None
+
+    def observe_gc_event_prune(self, **_kwargs: Any) -> None:
         return None
 
     def render(self) -> tuple[bytes, str] | None:
@@ -147,6 +163,23 @@ class PrometheusMetrics:
             "Whether this DataFlow controller process currently owns leadership.",
             registry=self._registry,
         )
+        self._gc_targets = Counter(
+            "dataflow_gc_targets_total",
+            "Durable artifact GC target outcomes.",
+            ("target", "outcome"),
+            registry=self._registry,
+        )
+        self._gc_objects_deleted = Counter(
+            "dataflow_gc_objects_deleted_total",
+            "Object-store objects deleted by artifact GC.",
+            ("target",),
+            registry=self._registry,
+        )
+        self._gc_events_pruned = Counter(
+            "dataflow_gc_events_pruned_total",
+            "Durable workflow events pruned by retention GC.",
+            registry=self._registry,
+        )
         self._controller_leader.set(0)
 
     def observe_api_request(
@@ -183,6 +216,21 @@ class PrometheusMetrics:
 
     def observe_controller_leadership(self, *, is_leader: bool) -> None:
         self._controller_leader.set(1 if is_leader else 0)
+
+    def observe_gc_target(
+        self,
+        *,
+        target: str,
+        outcome: str,
+        objects_deleted: int,
+    ) -> None:
+        self._gc_targets.labels(target=target, outcome=outcome).inc()
+        if objects_deleted:
+            self._gc_objects_deleted.labels(target=target).inc(max(objects_deleted, 0))
+
+    def observe_gc_event_prune(self, *, count: int) -> None:
+        if count:
+            self._gc_events_pruned.inc(max(count, 0))
 
     def render(self) -> tuple[bytes, str]:
         from prometheus_client import CONTENT_TYPE_LATEST, generate_latest

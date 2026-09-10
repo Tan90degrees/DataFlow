@@ -45,6 +45,7 @@ dataflow-compile = "dataflow.cli:compile_pipeline_cli"
 dataflow-migrate = "dataflow.metadata.migrations:main"
 dataflow-api = "dataflow.api_entrypoint:main"
 dataflow-controller = "dataflow.controller_app:main"
+dataflow-gc = "dataflow.gc_app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dataflow"]
