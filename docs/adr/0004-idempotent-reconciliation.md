@@ -1,5 +1,7 @@
 # ADR 0004: Durable desired state with idempotent external reconciliation
 
+English | [简体中文](../zh-CN/adr/0004-idempotent-reconciliation.md)
+
 ## Status
 
 Accepted

@@ -1,5 +1,7 @@
 # ADR 0007: Python SDK generates specifications, not distributed work
 
+English | [简体中文](../zh-CN/adr/0007-sdk-spec-generation.md)
+
 ## Status
 
 Accepted.

@@ -1,5 +1,7 @@
 # API authentication and RBAC
 
+English | [简体中文](zh-CN/api-auth.md)
+
 DataFlow keeps API identity separate from Ray and Kubernetes identities. The production
 `dataflow-api` entrypoint builds the normal control-plane application and then installs a
 pluggable bearer-authentication boundary.

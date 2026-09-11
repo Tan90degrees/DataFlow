@@ -47,6 +47,7 @@ from dataflow.state import (
     InvalidStateTransition,
     PipelineRunStatus,
 )
+from dataflow.version import BuildInfo
 
 
 class CreatePipelineRequest(BaseModel):
@@ -63,6 +64,20 @@ class CreateRunRequest(BaseModel):
     pipeline_version_id: UUID
     parameters: dict[str, Any] = Field(default_factory=dict)
     created_by: str | None = Field(default=None, max_length=255)
+
+
+class VersionResponse(BaseModel):
+    version: str
+    commit: str | None
+    image: str | None
+
+    @classmethod
+    def from_build_info(cls, build_info: BuildInfo) -> VersionResponse:
+        return cls(
+            version=build_info.version,
+            commit=build_info.commit,
+            image=build_info.image,
+        )
 
 
 class PipelineResponse(BaseModel):
@@ -354,9 +369,14 @@ def create_app(
     service: ControlPlaneService,
     *,
     observability: Observability | None = None,
+    build_info: BuildInfo | None = None,
 ) -> FastAPI:
     obs = observability or DEFAULT_OBSERVABILITY
-    app = FastAPI(title="DataFlow Control Plane", version="0.1.0")
+    resolved_build_info = build_info or BuildInfo.from_env()
+    app = FastAPI(
+        title="DataFlow Control Plane",
+        version=resolved_build_info.version,
+    )
 
     @app.middleware("http")
     async def observe_request(request: Request, call_next):
@@ -433,6 +453,10 @@ def create_app(
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/version", response_model=VersionResponse)
+    def version() -> VersionResponse:
+        return VersionResponse.from_build_info(resolved_build_info)
 
     @app.get("/readyz", response_model=None)
     def readyz() -> Any:

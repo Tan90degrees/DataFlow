@@ -1,5 +1,7 @@
 # Retention and durable artifact garbage collection
 
+English | [简体中文](zh-CN/retention-gc.md)
+
 DataFlow keeps orchestration metadata durable while allowing object-store data and old events to be reclaimed with explicit retention windows.
 
 ## Safety model

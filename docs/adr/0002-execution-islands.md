@@ -1,5 +1,7 @@
 # ADR 0002: Compile logical DAGs into execution islands
 
+English | [简体中文](../zh-CN/adr/0002-execution-islands.md)
+
 ## Status
 
 Accepted

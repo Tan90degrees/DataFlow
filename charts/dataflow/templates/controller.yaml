@@ -43,6 +43,8 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["dataflow-controller"]
           env:
+            - name: DATAFLOW_BUILD_IMAGE
+              value: {{ include "dataflow.image" . | quote }}
             - name: DATAFLOW_DATABASE_URL
               valueFrom:
                 secretKeyRef:

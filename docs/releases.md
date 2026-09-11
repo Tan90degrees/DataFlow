@@ -1,5 +1,7 @@
 # Releasing DataFlow
 
+English | [简体中文](zh-CN/releases.md)
+
 DataFlow releases are driven by immutable Git tags. A release version has one source-of-truth contract across the Python package and Helm chart, and publication is performed by GitHub Actions with the repository `GITHUB_TOKEN` rather than long-lived registry credentials.
 
 ## Version contract

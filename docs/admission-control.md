@@ -1,5 +1,7 @@
 # Scheduling admission control
 
+English | [简体中文](zh-CN/admission-control.md)
+
 DataFlow separates DAG readiness from execution admission. The scheduler decides when an
 ExecutionUnit is `READY`; the admission controller decides whether that ready unit may own an
 execution slot and reach the Ray/KubeRay reconciler.

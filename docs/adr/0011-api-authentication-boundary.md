@@ -1,5 +1,7 @@
 # ADR 0011: Keep API authentication outside orchestration identity
 
+English | [简体中文](../zh-CN/adr/0011-api-authentication-boundary.md)
+
 - Status: Accepted
 - Date: 2026-09-10
 

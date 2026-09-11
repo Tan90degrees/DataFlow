@@ -1,5 +1,7 @@
 # ADR 0013: Retention and resumable artifact garbage collection
 
+English | [简体中文](../zh-CN/adr/0013-retention-gc.md)
+
 ## Status
 
 Accepted

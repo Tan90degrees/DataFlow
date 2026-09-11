@@ -1,5 +1,7 @@
 # Controller high availability
 
+English | [简体中文](zh-CN/controller-ha.md)
+
 DataFlow controllers use PostgreSQL advisory-lock leadership. You may run multiple long-lived `dataflow-controller` replicas against the same DataFlow database; exactly one replica owns the configured leadership lock and performs scheduler/reconciler work. Other replicas remain standby.
 
 ## Recommended deployment

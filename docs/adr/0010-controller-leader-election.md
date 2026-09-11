@@ -1,5 +1,7 @@
 # ADR 0010: Fence controller reconciliation with PostgreSQL leadership
 
+English | [简体中文](../zh-CN/adr/0010-controller-leader-election.md)
+
 ## Status
 
 Accepted.

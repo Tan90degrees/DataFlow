@@ -62,6 +62,9 @@ def main() -> None:
     api_env = _env(api_container)
     controller_env = _env(controller_container)
 
+    assert api_env["DATAFLOW_BUILD_IMAGE"]["value"] == expected_image
+    assert controller_env["DATAFLOW_BUILD_IMAGE"]["value"] == expected_image
+
     db_ref = api_env["DATAFLOW_DATABASE_URL"]["valueFrom"]["secretKeyRef"]
     assert db_ref == {"name": "dataflow-db", "key": "database-url"}
     assert controller_env["DATAFLOW_DATABASE_URL"]["valueFrom"]["secretKeyRef"] == db_ref

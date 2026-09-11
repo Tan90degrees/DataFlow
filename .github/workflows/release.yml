@@ -63,8 +63,14 @@ jobs:
 
       - name: Build release container images without publishing
         run: |
-          docker build -t dataflow-runtime:release-check -f Dockerfile .
-          docker build -t dataflow-control-plane:release-check -f Dockerfile.control-plane .
+          docker build \
+            --build-arg "DATAFLOW_BUILD_COMMIT=$GITHUB_SHA" \
+            -t dataflow-runtime:release-check \
+            -f Dockerfile .
+          docker build \
+            --build-arg "DATAFLOW_BUILD_COMMIT=$GITHUB_SHA" \
+            -t dataflow-control-plane:release-check \
+            -f Dockerfile.control-plane .
 
       - name: Upload release distributions
         uses: actions/upload-artifact@v4
@@ -118,12 +124,14 @@ jobs:
           source="https://github.com/$GITHUB_REPOSITORY"
 
           docker build \
+            --build-arg "DATAFLOW_BUILD_COMMIT=$GITHUB_SHA" \
             --label "org.opencontainers.image.source=$source" \
             --label "org.opencontainers.image.version=$VERSION" \
             -t "$runtime:$VERSION" \
             -t "$runtime:sha-$GITHUB_SHA" \
             -f Dockerfile .
           docker build \
+            --build-arg "DATAFLOW_BUILD_COMMIT=$GITHUB_SHA" \
             --label "org.opencontainers.image.source=$source" \
             --label "org.opencontainers.image.version=$VERSION" \
             -t "$control_plane:$VERSION" \

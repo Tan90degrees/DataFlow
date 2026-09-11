@@ -1,5 +1,7 @@
 # ADR 0008: Version ClusterProfiles and pin snapshots into execution plans
 
+English | [简体中文](../zh-CN/adr/0008-cluster-profile-snapshots.md)
+
 ## Status
 
 Accepted

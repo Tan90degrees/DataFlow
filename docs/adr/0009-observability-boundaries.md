@@ -1,5 +1,7 @@
 # ADR 0009: Keep correlation identifiers out of metric labels
 
+English | [简体中文](../zh-CN/adr/0009-observability-boundaries.md)
+
 ## Status
 
 Accepted
