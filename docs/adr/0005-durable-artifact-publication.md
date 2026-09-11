@@ -1,5 +1,7 @@
 # ADR 0005: Durable artifact publication at execution-unit boundaries
 
+English | [简体中文](../zh-CN/adr/0005-durable-artifact-publication.md)
+
 ## Status
 
 Accepted.

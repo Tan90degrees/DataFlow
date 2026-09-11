@@ -1,5 +1,7 @@
 # ADR 0003: PostgreSQL is the durable orchestration source of truth
 
+English | [简体中文](../zh-CN/adr/0003-durable-metadata.md)
+
 ## Status
 
 Accepted

@@ -1,5 +1,7 @@
 # DataFlow observability
 
+English | [简体中文](zh-CN/observability.md)
+
 DataFlow separates high-cardinality correlation from low-cardinality metrics.
 
 ## Enable metrics
@@ -76,6 +78,31 @@ Use these IDs for log search; do not convert them into Prometheus labels.
 DataFlow creates OpenTelemetry spans through `opentelemetry-api` but does not install or configure an exporter. Deployment owns provider, sampler, processor, and OTLP exporter configuration. Without a configured SDK/provider, the hooks behave as no-op spans and orchestration semantics are unchanged.
 
 Initial spans include HTTP requests, PipelineRun creation, and ExecutionUnit reconciliation.
+
+## Build identity
+
+Use the public endpoint:
+
+```text
+GET /version
+```
+
+The response reports the installed package version and, when available, the immutable Git commit
+and container image coordinates. Release builds inject `DATAFLOW_BUILD_COMMIT` into both the
+control-plane and runtime images. The Helm chart sets `DATAFLOW_BUILD_IMAGE` on API and controller
+Pods from the exact rendered image reference, including an operator-supplied tag or digest.
+
+```json
+{
+  "version": "0.1.0",
+  "commit": "0123456789abcdef",
+  "image": "ghcr.io/tan90degrees/dataflow-control-plane:0.1.0"
+}
+```
+
+Source-tree processes that are not installed as a distribution report `0+unknown`; locally built
+images without a build argument return `null` for `commit`, and non-Helm processes return `null`
+for `image`.
 
 ## Run diagnostics
 

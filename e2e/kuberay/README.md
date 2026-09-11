@@ -1,5 +1,7 @@
 # Real KubeRay end-to-end suite
 
+English | [简体中文](README.zh-CN.md)
+
 This suite validates DataFlow against a real Kubernetes control plane, KubeRay operator, RayCluster/RayJob lifecycle, Ray Data execution, PostgreSQL state, and S3-compatible durable artifacts.
 
 ## Pinned test stack

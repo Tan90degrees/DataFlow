@@ -1,5 +1,7 @@
 # DataFlow
 
+English | [简体中文](README.zh-CN.md) · [Documentation](docs/README.md)
+
 Ray-native distributed data processing orchestration framework built on Ray, Ray Data, KubeRay, and Kubernetes.
 
 ## Engineering direction
@@ -66,6 +68,10 @@ PostgreSQL metadata and control-plane integration tests run when `DATAFLOW_TEST_
 ```bash
 dataflow-migrate --dsn postgresql://postgres:postgres@localhost:5432/dataflow
 ```
+
+For a complete local Kubernetes debug environment with KubeRay, PostgreSQL, MinIO, API and
+controller processes, see the [Getting started guide](docs/getting-started.md) and
+[Local Kubernetes development](docs/local-development.md).
 
 ### Python SDK
 
@@ -156,6 +162,7 @@ GET  /v1/pipeline-runs/{run_id}/events
 GET  /v1/pipeline-runs/{run_id}/artifacts
 GET  /healthz
 GET  /readyz
+GET  /version
 ```
 
 Creating a run persists the compiled execution graph, advances the run through `CREATED -> QUEUED -> PLANNING -> RUNNING`, and evaluates readiness once. The API does not run the long-lived controller loop inside the web process.
@@ -239,7 +246,11 @@ docker build -t dataflow-runtime:dev .
 
 Push that image to a registry reachable by the Kubernetes cluster and set `runtime.image` in the execution plan or pipeline to the pushed immutable tag. Do not point production execution plans at a stock Ray image unless DataFlow is supplied through an explicit Ray runtime environment.
 
-## Current milestone
+## v0.1.0 release candidate
+
+The initial implementation milestone is complete. The package and Helm chart are versioned
+`0.1.0`, but the version is not considered released until the matching Git tag has passed the
+release workflow and a GitHub Release has been published.
 
 - [x] Versioned execution-plan contract
 - [x] Ray Data runtime driver
@@ -256,5 +267,16 @@ Push that image to a registry reachable by the Kubernetes cluster and set `runti
 - [x] HTTP control-plane API
 - [x] Python SDK
 - [x] ClusterProfile/resource policy
-- [ ] Control-plane observability
-- [ ] Real KubeRay end-to-end suite
+- [x] Control-plane observability and run diagnostics
+- [x] Real KubeRay end-to-end suite
+- [x] PostgreSQL-fenced controller HA
+- [x] API authentication and role-based authorization
+- [x] Durable admission control and scheduling fairness
+- [x] Artifact retention and garbage collection
+- [x] Production-oriented Helm deployment and HA end-to-end coverage
+- [x] Reproducible tag-driven release pipeline
+- [x] Control-plane build/version endpoint and image identity
+
+The next milestone focuses on proving the release under production-like operating conditions:
+upgrade and rollback safety, backup and restore, security hardening, and scale/soak validation.
+See [the project roadmap](docs/roadmap.md) for the ordered acceptance gates.

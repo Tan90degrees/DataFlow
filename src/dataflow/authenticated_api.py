@@ -12,6 +12,7 @@ from dataflow.api_repository import PostgresApiRepository
 from dataflow.api_service import ControlPlaneService
 from dataflow.auth import ApiAuthSettings, install_api_auth
 from dataflow.observability import Observability
+from dataflow.version import BuildInfo
 
 
 def create_app(
@@ -19,11 +20,12 @@ def create_app(
     *,
     auth_settings: ApiAuthSettings,
     observability: Observability | None = None,
+    build_info: BuildInfo | None = None,
 ) -> FastAPI:
     """Create the public API and install the configured authentication boundary."""
 
     obs = observability or Observability.from_env()
-    app = create_core_app(service, observability=obs)
+    app = create_core_app(service, observability=obs, build_info=build_info)
     return install_api_auth(app, auth_settings, observability=obs)
 
 
@@ -40,6 +42,7 @@ def create_app_from_env(environ: Mapping[str, str] | None = None) -> FastAPI:
         service,
         auth_settings=ApiAuthSettings.from_env(env),
         observability=observability,
+        build_info=BuildInfo.from_env(env),
     )
 
 

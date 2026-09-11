@@ -1,5 +1,7 @@
 # Kubernetes deployment and controller HA
 
+English | [简体中文](zh-CN/kubernetes-deployment.md)
+
 The `charts/dataflow` Helm chart packages the DataFlow API and durable controller for production-oriented Kubernetes deployments. PostgreSQL and S3-compatible storage are external dependencies and are intentionally not installed by the chart.
 
 ## Prerequisites

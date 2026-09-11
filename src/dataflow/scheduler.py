@@ -5,7 +5,11 @@ from __future__ import annotations
 from typing import Protocol
 from uuid import UUID
 
-from dataflow.metadata.repository import ExecutionUnitRecord, PipelineRunRecord
+from dataflow.metadata.repository import (
+    ConcurrentStateChange,
+    ExecutionUnitRecord,
+    PipelineRunRecord,
+)
 from dataflow.state import (
     TERMINAL_UNIT_STATUSES,
     ExecutionUnitStatus,
@@ -15,6 +19,8 @@ from dataflow.state import (
 
 class SchedulingRepository(Protocol):
     def get_run(self, run_id: UUID) -> PipelineRunRecord: ...
+
+    def get_unit(self, unit_id: UUID) -> ExecutionUnitRecord: ...
 
     def list_units(self, run_id: UUID) -> list[ExecutionUnitRecord]: ...
 
@@ -63,14 +69,14 @@ class Scheduler:
                     continue
                 dependencies = self._dependencies(unit, units_by_key)
                 if all(dep.status is ExecutionUnitStatus.SUCCEEDED for dep in dependencies):
-                    updated = self._repository.transition_unit_status(
-                        unit.id,
+                    updated = self._transition_unit(
+                        unit,
                         ExecutionUnitStatus.READY,
                         expected=ExecutionUnitStatus.PENDING,
                         payload={"reason": "ALL_DEPENDENCIES_SUCCEEDED"},
                     )
                     units_by_key[unit.unit_key] = updated
-                    changed = True
+                    changed = updated.status is not unit.status
                     continue
 
                 blocked = [
@@ -79,8 +85,8 @@ class Scheduler:
                     if dep.status in {ExecutionUnitStatus.FAILED, ExecutionUnitStatus.CANCELLED}
                 ]
                 if blocked:
-                    updated = self._repository.transition_unit_status(
-                        unit.id,
+                    updated = self._transition_unit(
+                        unit,
                         ExecutionUnitStatus.CANCELLED,
                         expected=ExecutionUnitStatus.PENDING,
                         payload={
@@ -89,7 +95,7 @@ class Scheduler:
                         },
                     )
                     units_by_key[unit.unit_key] = updated
-                    changed = True
+                    changed = updated.status is not unit.status
 
         ordered = [units_by_key[unit.unit_key] for unit in units]
         self._converge_run(run, ordered)
@@ -98,8 +104,8 @@ class Scheduler:
     def cancel_run(self, run_id: UUID) -> PipelineRunRecord:
         run = self._repository.get_run(run_id)
         if run.status is not PipelineRunStatus.CANCELLED:
-            run = self._repository.transition_run_status(
-                run_id,
+            run = self._transition_run(
+                run,
                 PipelineRunStatus.CANCELLED,
                 expected=run.status,
                 payload={"reason": "CANCELLATION_REQUESTED"},
@@ -119,14 +125,56 @@ class Scheduler:
         }
         for unit in units:
             if unit.status in waiting:
-                unit = self._repository.transition_unit_status(
-                    unit.id,
+                unit = self._transition_unit(
+                    unit,
                     ExecutionUnitStatus.CANCELLED,
                     expected=unit.status,
                     payload={"reason": "RUN_CANCELLED"},
                 )
             result.append(unit)
         return result
+
+    def _transition_unit(
+        self,
+        unit: ExecutionUnitRecord,
+        target: ExecutionUnitStatus,
+        *,
+        expected: ExecutionUnitStatus,
+        payload: dict | None = None,
+    ) -> ExecutionUnitRecord:
+        try:
+            return self._repository.transition_unit_status(
+                unit.id,
+                target,
+                expected=expected,
+                payload=payload,
+            )
+        except ConcurrentStateChange:
+            current = self._repository.get_unit(unit.id)
+            if current.status is expected:
+                raise
+            return current
+
+    def _transition_run(
+        self,
+        run: PipelineRunRecord,
+        target: PipelineRunStatus,
+        *,
+        expected: PipelineRunStatus,
+        payload: dict | None = None,
+    ) -> PipelineRunRecord:
+        try:
+            return self._repository.transition_run_status(
+                run.id,
+                target,
+                expected=expected,
+                payload=payload,
+            )
+        except ConcurrentStateChange:
+            current = self._repository.get_run(run.id)
+            if current.status is expected:
+                raise
+            return current
 
     @staticmethod
     def _dependencies(
@@ -149,8 +197,8 @@ class Scheduler:
             return
         statuses = [unit.status for unit in units]
         if all(status is ExecutionUnitStatus.SUCCEEDED for status in statuses):
-            self._repository.transition_run_status(
-                run.id,
+            self._transition_run(
+                run,
                 PipelineRunStatus.SUCCEEDED,
                 expected=PipelineRunStatus.RUNNING,
             )
@@ -158,8 +206,8 @@ class Scheduler:
         if all(status in TERMINAL_UNIT_STATUSES for status in statuses) and any(
             status is ExecutionUnitStatus.FAILED for status in statuses
         ):
-            self._repository.transition_run_status(
-                run.id,
+            self._transition_run(
+                run,
                 PipelineRunStatus.FAILED,
                 expected=PipelineRunStatus.RUNNING,
                 payload={"reason": "EXECUTION_UNIT_FAILED"},
@@ -168,8 +216,8 @@ class Scheduler:
         if all(status in TERMINAL_UNIT_STATUSES for status in statuses) and any(
             status is ExecutionUnitStatus.CANCELLED for status in statuses
         ):
-            self._repository.transition_run_status(
-                run.id,
+            self._transition_run(
+                run,
                 PipelineRunStatus.FAILED,
                 expected=PipelineRunStatus.RUNNING,
                 payload={"reason": "EXECUTION_UNIT_CANCELLED"},

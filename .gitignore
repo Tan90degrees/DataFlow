@@ -206,6 +206,9 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
+# Local DataFlow debug cluster state
+.dataflow-dev/
+
 # PyPI configuration file
 .pypirc
 

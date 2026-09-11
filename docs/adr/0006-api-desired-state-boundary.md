@@ -1,5 +1,7 @@
 # ADR 0006: HTTP API writes durable desired state
 
+English | [简体中文](../zh-CN/adr/0006-api-desired-state-boundary.md)
+
 ## Status
 
 Accepted.

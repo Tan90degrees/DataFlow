@@ -13,6 +13,9 @@ from dataflow.compiler import (
     compile_pipeline,
 )
 from dataflow.contracts import ExecutionPlan, OperatorKind, OperatorSpec, ResourceSpec, RuntimeSpec
+from dataflow.version import package_version
+
+__version__ = package_version()
 
 __all__ = [
     "EdgeKind",
@@ -29,5 +32,6 @@ __all__ = [
     "PipelineSpec",
     "ResourceSpec",
     "RuntimeSpec",
+    "__version__",
     "compile_pipeline",
 ]

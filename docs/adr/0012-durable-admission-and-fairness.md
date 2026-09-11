@@ -1,5 +1,7 @@
 # ADR 0012: Durable admission is a separate layer between DAG readiness and reconciliation
 
+English | [简体中文](../zh-CN/adr/0012-durable-admission-and-fairness.md)
+
 - Status: Accepted
 - Date: 2026-09-10
 

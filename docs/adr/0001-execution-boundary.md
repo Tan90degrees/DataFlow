@@ -1,5 +1,7 @@
 # ADR-0001: Separate orchestration and Ray Data execution
 
+English | [简体中文](../zh-CN/adr/0001-execution-boundary.md)
+
 Status: Accepted
 
 ## Context
