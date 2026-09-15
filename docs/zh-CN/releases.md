@@ -2,7 +2,9 @@
 
 [English](../releases.md) | 简体中文
 
-DataFlow 发布由不可变 Git 标签驱动。一个发布版本在 Python 包和 Helm Chart 之间遵循统一事实来源契约，发布由 GitHub Actions 使用仓库 `GITHUB_TOKEN` 完成，不使用长期镜像仓库凭据。
+DataFlow 发布由不可变 Git 标签驱动。一个发布版本在 Python 包和 Helm Chart
+之间遵循统一事实来源契约，发布由 GitHub Actions 使用仓库 `GITHUB_TOKEN`
+完成，不使用长期镜像仓库凭据。
 
 ## 版本契约
 
@@ -21,23 +23,33 @@ dataflow-check-release v0.1.0
 
 只接受规范 `vX.Y.Z` 标签。三个内置版本中任意一个不同都会拒绝标签。
 
-Helm Chart 默认特意把 `image.tag` 留空。模板会把空标签解析为 `Chart.appVersion`，因此升级 Chart 版本契约也会升级默认控制面镜像，无需在 `values.yaml` 中维护第二个版本值。
+Helm Chart 默认特意把 `image.tag` 留空。模板会把空标签解析为
+`Chart.appVersion`，因此升级 Chart 版本契约也会升级默认控制面镜像，无需在
+`values.yaml` 中维护第二个版本值。
 
 ## 拉取请求验证
 
 修改发布敏感文件会以仅验证模式运行 `release` 工作流。它会构建但不发布：
 
 - Python wheel 和源码发行包；
-- 打包后的 Helm Chart；
-- Ray 运行时镜像；
-- 控制面镜像；
-- 可分发归档的 SHA256 校验和。
+- 打包后的 DataFlow Helm Chart；
+- 离线 bundle 使用的固定版本 KubeRay operator Helm Chart；
+- `linux/amd64` 与 `linux/arm64` 两种架构的 Ray runtime 镜像；
+- `linux/amd64` 与 `linux/arm64` 两种架构的 control-plane 镜像；
+- 每种架构对应的离线 bundle 与 SHA256 校验文件。
 
-这组验证附加在常规单元测试、Helm 渲染、KubeRay 和 HA 门禁之上。PR 验证只有仓库读取权限。
+amd64 离线 bundle 还会在 Kind 中做真实验收：所有应用和依赖镜像都提前注入，
+并使用 `imagePullPolicy=Never`。Smoke test 只从 bundle 内的本地 Chart 安装
+KubeRay 与 DataFlow；如果 DataFlow 或 KubeRay namespace 出现镜像 `Pulling`
+事件，测试直接失败。
+
+这组验证附加在常规单元测试、Helm 渲染、KubeRay 和 HA 门禁之上。PR 验证只有
+仓库读取权限。
 
 ## 创建发布
 
-发布提交进入 `main` 且所有必需检查通过后，创建并推送匹配的附注或轻量 Git 标签：
+发布提交进入 `main` 且所有必需检查通过后，创建并推送匹配的附注或轻量 Git
+标签：
 
 ```bash
 git switch main
@@ -47,7 +59,8 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-标签触发的工作流会在发布前再次验证标签。如果验证或任何构建失败，发布作业不会发布任何内容。
+标签触发的工作流会在发布前再次验证标签。如果版本验证、任一架构构建、离线
+bundle 组装或离线 smoke 验收失败，发布作业都不会运行。
 
 `v0.1.0` 的发布坐标为：
 
@@ -59,13 +72,27 @@ ghcr.io/tan90degrees/dataflow-control-plane:sha-<git-sha>
 oci://ghcr.io/tan90degrees/charts/dataflow:0.1.0
 ```
 
-工作流有意不发布可变 `latest` 标签。部署应固定发布版本或镜像摘要。
+两类 DataFlow 镜像标签都是同时包含 `linux/amd64` 和 `linux/arm64` 的多平台
+manifest list。工作流有意不发布可变 `latest` 标签。部署应固定发布版本或镜像
+摘要。
 
-该标签的 GitHub Release 包含 Python wheel、Python 源码发行包、打包 Helm Chart 以及由准确已验证归档生成的 `SHA256SUMS`。
+该标签的 GitHub Release 会包含 Python wheel、Python 源码发行包、DataFlow
+Helm Chart、发布校验文件，以及两个架构专属离线 bundle：
+
+```text
+dataflow-offline-0.1.0-amd64.tar.gz
+dataflow-offline-0.1.0-amd64.sha256
+dataflow-offline-0.1.0-arm64.tar.gz
+dataflow-offline-0.1.0-arm64.sha256
+```
+
+Bundle 结构和隔离区安装流程参见
+[离线与多架构部署](offline-deployment.md)。
 
 ## 安装已发布 Chart
 
-创建 `kubernetes-deployment.md` 所述的外部数据库和 S3 凭据 Secret，然后安装 OCI Chart：
+创建 `kubernetes-deployment.md` 所述的外部数据库和 S3 凭据 Secret，然后安装
+OCI Chart：
 
 ```bash
 helm upgrade --install dataflow \
@@ -77,10 +104,15 @@ helm upgrade --install dataflow \
   --set s3.existingSecret=dataflow-s3
 ```
 
-Chart 默认为 `ghcr.io/tan90degrees/dataflow-control-plane:<appVersion>`。只有明确使用镜像或自定义构建时才覆盖 `image.repository` 或 `image.tag`。
+Chart 默认为
+`ghcr.io/tan90degrees/dataflow-control-plane:<appVersion>`。只有明确使用镜像或自定义
+构建时才覆盖 `image.repository` 或 `image.tag`。
 
-Ray 运行时镜像独立于控制面。ClusterProfile 应引用匹配的已发布运行时镜像，例如 `ghcr.io/tan90degrees/dataflow-runtime:0.1.0`。
+Ray runtime 镜像独立于控制面。ClusterProfile 应引用匹配的已发布 runtime
+镜像，例如 `ghcr.io/tan90degrees/dataflow-runtime:0.1.0`。
 
 ## 失败与重试语义
 
-标签工作流失败后应在新提交中诊断并修复，不要移动已经发布的标签。发布任何制品前，重试失败工作流是安全的。发布开始后，将版本标签视为不可变：为修正制品提升补丁版本，不要覆盖已发布镜像或 Chart。
+标签工作流失败后应在新提交中诊断并修复，不要移动已经发布的标签。发布任何
+制品前，重试失败工作流是安全的。发布开始后，将版本标签视为不可变：为修正
+制品提升补丁版本，不要覆盖已发布镜像、Chart 或离线 bundle。

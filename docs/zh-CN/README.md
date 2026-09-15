@@ -9,6 +9,7 @@
 - [快速上手](getting-started.md)：安装依赖、启动隔离的本地 Kubernetes 环境、提交和检查流水线，并选择后续部署路径。
 - [本地 Kubernetes 开发](local-development.md)：本地集群生命周期、端点和调试命令。
 - [Kubernetes 部署与控制器高可用](kubernetes-deployment.md)：面向生产的 Helm 安装和升级。
+- [离线与多架构部署](offline-deployment.md)：amd64/arm64 发布包、内网镜像同步与完全离线安装。
 - [API 认证与 RBAC](api-auth.md)：认证模式、角色和 SDK 凭据。
 
 ## 使用和运维 DataFlow

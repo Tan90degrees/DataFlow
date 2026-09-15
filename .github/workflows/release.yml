@@ -7,10 +7,17 @@ on:
       - ".github/workflows/release.yml"
       - "Dockerfile"
       - "Dockerfile.control-plane"
+      - "Dockerfile.minio-reference"
       - "charts/dataflow/**"
+      - "docs/offline-deployment.md"
       - "docs/releases.md"
+      - "docs/zh-CN/offline-deployment.md"
+      - "docs/zh-CN/releases.md"
       - "pyproject.toml"
+      - "release/offline/**"
+      - "scripts/build_offline_bundle.py"
       - "src/dataflow/**"
+      - "tests/test_offline_bundle.py"
       - "tests/test_release_contract.py"
   push:
     tags:
@@ -22,6 +29,13 @@ concurrency:
 
 permissions:
   contents: read
+
+env:
+  KUBERAY_VERSION: "1.6.2"
+  KUBERAY_OPERATOR_IMAGE: "quay.io/kuberay/operator:v1.6.2"
+  POSTGRES_IMAGE: "postgres:16-alpine"
+  MINIO_RELEASE: "RELEASE.2025-09-07T16-13-09Z"
+  MINIO_REFERENCE_IMAGE: "dataflow-minio-reference:RELEASE.2025-09-07T16-13-09Z"
 
 jobs:
   validate:
@@ -52,27 +66,35 @@ jobs:
             dataflow-check-release
           fi
 
-      - name: Build Python and Helm distributions
+      - name: Build Python and local Helm distributions
+        shell: bash
         run: |
+          set -euo pipefail
+          VERSION="$(dataflow-check-release)"
           rm -rf dist
+          mkdir -p dist/charts
+
           python -m build --outdir dist
           helm lint charts/dataflow --set database.existingSecret=dataflow-db
-          helm package charts/dataflow --destination dist
-          (cd dist && sha256sum *.whl *.tar.gz *.tgz > SHA256SUMS)
-          cat dist/SHA256SUMS
+          helm package charts/dataflow --destination dist/charts
 
-      - name: Build release container images without publishing
-        run: |
-          docker build \
-            --build-arg "DATAFLOW_BUILD_COMMIT=$GITHUB_SHA" \
-            -t dataflow-runtime:release-check \
-            -f Dockerfile .
-          docker build \
-            --build-arg "DATAFLOW_BUILD_COMMIT=$GITHUB_SHA" \
-            -t dataflow-control-plane:release-check \
-            -f Dockerfile.control-plane .
+          helm repo add kuberay https://ray-project.github.io/kuberay-helm/
+          helm repo update kuberay
+          helm pull kuberay/kuberay-operator \
+            --version "$KUBERAY_VERSION" \
+            --destination dist/charts
 
-      - name: Upload release distributions
+          test -f "dist/charts/dataflow-$VERSION.tgz"
+          test -f "dist/charts/kuberay-operator-$KUBERAY_VERSION.tgz"
+          (
+            cd dist
+            find . -type f ! -name SHA256SUMS -print0 \
+              | sort -z \
+              | xargs -0 sha256sum > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+
+      - name: Upload validated distributions
         uses: actions/upload-artifact@v4
         with:
           name: release-dist
@@ -80,11 +102,251 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  publish:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+  offline-bundle:
+    name: offline-bundle-${{ matrix.arch }}
     needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Download validated distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: offline-input
+
+      - name: Build architecture-specific image archives
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          VERSION="$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          print(tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"])
+          PY
+          )"
+          mkdir -p offline-input/images
+          source_url="https://github.com/$GITHUB_REPOSITORY"
+          if [[ "$ARCH" == "arm64" ]]; then
+            ray_base="rayproject/ray:2.58.0-py311-aarch64"
+          else
+            ray_base="rayproject/ray:2.58.0-py311"
+          fi
+
+          docker buildx build \
+            --platform "linux/$ARCH" \
+            --build-arg "RAY_BASE_IMAGE=$ray_base" \
+            --build-arg "DATAFLOW_BUILD_COMMIT=$GITHUB_SHA" \
+            --label "org.opencontainers.image.source=$source_url" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            --tag "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/dataflow-runtime:$VERSION" \
+            --cache-from "type=gha,scope=offline-runtime-$ARCH" \
+            --cache-to "type=gha,mode=max,scope=offline-runtime-$ARCH" \
+            --output "type=docker,dest=offline-input/images/dataflow-runtime.tar" \
+            -f Dockerfile .
+
+          docker buildx build \
+            --platform "linux/$ARCH" \
+            --build-arg "DATAFLOW_BUILD_COMMIT=$GITHUB_SHA" \
+            --label "org.opencontainers.image.source=$source_url" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            --tag "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/dataflow-control-plane:$VERSION" \
+            --cache-from "type=gha,scope=offline-control-plane-$ARCH" \
+            --cache-to "type=gha,mode=max,scope=offline-control-plane-$ARCH" \
+            --output "type=docker,dest=offline-input/images/dataflow-control-plane.tar" \
+            -f Dockerfile.control-plane .
+
+          docker buildx build \
+            --platform "linux/$ARCH" \
+            --build-arg "MINIO_RELEASE=$MINIO_RELEASE" \
+            --tag "$MINIO_REFERENCE_IMAGE" \
+            --cache-from "type=gha,scope=offline-minio-$ARCH" \
+            --cache-to "type=gha,mode=max,scope=offline-minio-$ARCH" \
+            --output "type=docker,dest=offline-input/images/minio.tar" \
+            -f Dockerfile.minio-reference .
+
+          save_vendor_image() {
+            local image="$1"
+            local output="$2"
+            docker pull --platform "linux/$ARCH" "$image"
+            docker save "$image" --output "$output"
+          }
+
+          save_vendor_image "$KUBERAY_OPERATOR_IMAGE" offline-input/images/kuberay-operator.tar
+          save_vendor_image "$POSTGRES_IMAGE" offline-input/images/postgres.tar
+
+      - name: Assemble and verify offline bundle
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          VERSION="$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          print(tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"])
+          PY
+          )"
+          mkdir -p offline-out offline-verify
+
+          python scripts/build_offline_bundle.py \
+            --root . \
+            --input-dir offline-input \
+            --output-dir offline-out \
+            --version "$VERSION" \
+            --arch "$ARCH" \
+            --image-prefix "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+
+          (
+            cd offline-out
+            sha256sum -c "dataflow-offline-$VERSION-$ARCH.sha256"
+          )
+          tar -xzf "offline-out/dataflow-offline-$VERSION-$ARCH.tar.gz" \
+            -C offline-verify
+          (
+            cd "offline-verify/dataflow-offline-$VERSION-$ARCH"
+            sha256sum -c SHA256SUMS
+            python - "$ARCH" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          manifest = json.loads(Path("manifest.json").read_text())
+          assert manifest["architecture"] == sys.argv[1]
+          assert manifest["platform"] == f"linux/{sys.argv[1]}"
+          assert {item["archive"] for item in manifest["images"]} == {
+              "images/dataflow-runtime.tar",
+              "images/dataflow-control-plane.tar",
+              "images/kuberay-operator.tar",
+              "images/postgres.tar",
+              "images/minio.tar",
+          }
+          PY
+          )
+
+      - name: Upload offline bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-bundle-${{ matrix.arch }}
+          path: |
+            offline-out/*.tar.gz
+            offline-out/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  offline-smoke:
+    needs: offline-bundle
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download amd64 offline bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: offline-bundle-amd64
+          path: offline-artifact
+
+      - name: Install Kind v0.33.0
+        run: |
+          curl -fsSLo kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+          echo "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  kind" | sha256sum -c -
+          chmod +x kind
+          sudo mv kind /usr/local/bin/kind
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.18.6
+
+      - name: Prepare cluster before entering offline install phase
+        run: |
+          kind create cluster \
+            --name dataflow-offline \
+            --image kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+
+      - name: Install solely from the offline bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          print(tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"])
+          PY
+          )"
+          tar -xzf "offline-artifact/dataflow-offline-$VERSION-amd64.tar.gz" -C offline-artifact
+          BUNDLE="$PWD/offline-artifact/dataflow-offline-$VERSION-amd64"
+          REGISTRY="offline.invalid/dataflow"
+          NAMESPACE="dataflow-offline"
+
+          "$BUNDLE/scripts/kind-load-images.sh" \
+            --cluster dataflow-offline \
+            --registry "$REGISTRY"
+
+          "$BUNDLE/scripts/bootstrap-reference-deps.sh" \
+            --registry "$REGISTRY" \
+            --namespace "$NAMESPACE" \
+            --pull-policy Never
+
+          "$BUNDLE/scripts/install.sh" \
+            --registry "$REGISTRY" \
+            --namespace "$NAMESPACE" \
+            --database-secret dataflow-database \
+            --s3-secret dataflow-s3 \
+            --s3-endpoint "http://minio.$NAMESPACE.svc.cluster.local:9000" \
+            --pull-policy Never
+
+          kubectl -n "$NAMESPACE" run dataflow-runtime-smoke \
+            --image="$REGISTRY/dataflow-runtime:$VERSION" \
+            --image-pull-policy=Never \
+            --restart=Never \
+            --command -- python -c 'import dataflow, ray; print(dataflow.__version__, ray.__version__)'
+          kubectl -n "$NAMESPACE" wait \
+            --for=jsonpath='{.status.phase}'=Succeeded \
+            pod/dataflow-runtime-smoke \
+            --timeout=3m
+          kubectl -n "$NAMESPACE" logs pod/dataflow-runtime-smoke
+
+          for ns in "$NAMESPACE" kuberay-system; do
+            if kubectl -n "$ns" get events \
+              --field-selector reason=Pulling \
+              -o name | grep -q .; then
+              echo "unexpected registry pull during offline phase in namespace $ns" >&2
+              kubectl -n "$ns" get events --sort-by=.lastTimestamp >&2
+              exit 1
+            fi
+          done
+
+          kubectl -n "$NAMESPACE" get pods
+          kubectl -n kuberay-system get pods
+          kubectl get crd rayjobs.ray.io rayclusters.ray.io
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [validate, offline-bundle, offline-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: write
       packages: write
@@ -98,11 +360,26 @@ jobs:
         with:
           version: v3.18.6
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Download validated distributions
         uses: actions/download-artifact@v4
         with:
           name: release-dist
           path: dist
+
+      - name: Download offline bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: offline-bundle-*
+          path: offline
+          merge-multiple: true
 
       - name: Resolve immutable release coordinates
         shell: bash
@@ -116,40 +393,78 @@ jobs:
           printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           printf '%s' "$GITHUB_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
 
-      - name: Build and publish immutable container images
+      - name: Publish architecture images and assemble multi-architecture manifests
         shell: bash
         run: |
+          set -euo pipefail
           runtime="ghcr.io/$GHCR_OWNER/dataflow-runtime"
           control_plane="ghcr.io/$GHCR_OWNER/dataflow-control-plane"
-          source="https://github.com/$GITHUB_REPOSITORY"
+          mkdir -p publish-images
 
-          docker build \
-            --build-arg "DATAFLOW_BUILD_COMMIT=$GITHUB_SHA" \
-            --label "org.opencontainers.image.source=$source" \
-            --label "org.opencontainers.image.version=$VERSION" \
-            -t "$runtime:$VERSION" \
-            -t "$runtime:sha-$GITHUB_SHA" \
-            -f Dockerfile .
-          docker build \
-            --build-arg "DATAFLOW_BUILD_COMMIT=$GITHUB_SHA" \
-            --label "org.opencontainers.image.source=$source" \
-            --label "org.opencontainers.image.version=$VERSION" \
-            -t "$control_plane:$VERSION" \
-            -t "$control_plane:sha-$GITHUB_SHA" \
-            -f Dockerfile.control-plane .
+          publish_archive() {
+            local archive="$1"
+            local source_ref="$2"
+            local repository="$3"
+            local arch="$4"
+            docker load --input "$archive" >/dev/null
 
-          docker push "$runtime:$VERSION"
-          docker push "$runtime:sha-$GITHUB_SHA"
-          docker push "$control_plane:$VERSION"
-          docker push "$control_plane:sha-$GITHUB_SHA"
+            docker tag "$source_ref" "$repository:$VERSION-$arch"
+            docker tag "$source_ref" "$repository:sha-$GITHUB_SHA-$arch"
+            docker push "$repository:$VERSION-$arch"
+            docker push "$repository:sha-$GITHUB_SHA-$arch"
+          }
+
+          for arch in amd64 arm64; do
+            bundle="publish-images/dataflow-offline-$VERSION-$arch"
+            tar -xzf "offline/dataflow-offline-$VERSION-$arch.tar.gz" -C publish-images
+
+            publish_archive \
+              "$bundle/images/dataflow-runtime.tar" \
+              "$runtime:$VERSION" \
+              "$runtime" \
+              "$arch"
+            publish_archive \
+              "$bundle/images/dataflow-control-plane.tar" \
+              "$control_plane:$VERSION" \
+              "$control_plane" \
+              "$arch"
+          done
+
+          docker buildx imagetools create \
+            --tag "$runtime:$VERSION" \
+            --tag "$runtime:sha-$GITHUB_SHA" \
+            "$runtime:$VERSION-amd64" \
+            "$runtime:$VERSION-arm64"
+          docker buildx imagetools create \
+            --tag "$control_plane:$VERSION" \
+            --tag "$control_plane:sha-$GITHUB_SHA" \
+            "$control_plane:$VERSION-amd64" \
+            "$control_plane:$VERSION-arm64"
+
+          for image in "$runtime:$VERSION" "$control_plane:$VERSION"; do
+            docker buildx imagetools inspect "$image" | tee /tmp/manifest.txt
+            grep -F "linux/amd64" /tmp/manifest.txt
+            grep -F "linux/arm64" /tmp/manifest.txt
+          done
 
       - name: Publish Helm chart to GHCR OCI registry
-        run: helm push "dist/dataflow-$VERSION.tgz" "oci://ghcr.io/$GHCR_OWNER/charts"
+        run: helm push "dist/charts/dataflow-$VERSION.tgz" "oci://ghcr.io/$GHCR_OWNER/charts"
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release with online and offline artifacts
         shell: bash
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
+          set -euo pipefail
+          mkdir -p release-assets
+          cp dist/*.whl dist/*.tar.gz release-assets/
+          cp "dist/charts/dataflow-$VERSION.tgz" release-assets/
+          cp offline/*.tar.gz offline/*.sha256 release-assets/
+          (
+            cd release-assets
+            find . -maxdepth 1 -type f ! -name RELEASE_SHA256SUMS -printf '%f\0' \
+              | sort -z \
+              | xargs -0 sha256sum > RELEASE_SHA256SUMS
+          )
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
             --verify-tag \
             --title "DataFlow $VERSION" \
             --generate-notes

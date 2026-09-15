@@ -13,6 +13,8 @@ every document has a matching Simplified Chinese version under `docs/zh-CN/`.
   debugging commands.
 - [Kubernetes deployment and controller HA](kubernetes-deployment.md): production-oriented Helm
   installation and upgrades.
+- [Offline and multi-architecture deployment](offline-deployment.md): amd64/arm64 release bundles,
+  internal-registry mirroring, and air-gapped installation.
 - [API authentication and RBAC](api-auth.md): authentication modes, roles, and SDK credentials.
 
 ## Use and operate DataFlow
