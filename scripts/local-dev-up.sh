@@ -70,7 +70,7 @@ BUILD_COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || true)"
 if [[ -n "$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null || true)" ]]; then
   BUILD_COMMIT="${BUILD_COMMIT:-unknown}-dirty"
 fi
-log "build DataFlow runtime and control-plane images"
+log "build DataFlow runtime, control-plane, and pinned MinIO reference images"
 docker build \
   --build-arg "DATAFLOW_BUILD_COMMIT=$BUILD_COMMIT" \
   -t dataflow-runtime:e2e \
@@ -79,10 +79,15 @@ docker build \
   --build-arg "DATAFLOW_BUILD_COMMIT=$BUILD_COMMIT" \
   -t dataflow-control-plane:e2e \
   -f "$ROOT_DIR/Dockerfile.control-plane" "$ROOT_DIR"
+docker build \
+  --build-arg TARGETARCH=amd64 \
+  -t dataflow-minio-reference:e2e \
+  -f "$ROOT_DIR/Dockerfile.minio-reference" "$ROOT_DIR"
 
 log "load images into Kind"
 "$KIND_BIN" load docker-image --name "$CLUSTER_NAME" dataflow-runtime:e2e
 "$KIND_BIN" load docker-image --name "$CLUSTER_NAME" dataflow-control-plane:e2e
+"$KIND_BIN" load docker-image --name "$CLUSTER_NAME" dataflow-minio-reference:e2e
 
 log "reset the dedicated debug namespace and deploy dependencies plus DataFlow"
 kubectl --kubeconfig "$KUBECONFIG_PATH" delete namespace "$NAMESPACE" \
