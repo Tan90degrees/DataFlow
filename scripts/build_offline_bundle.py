@@ -116,8 +116,12 @@ def build_bundle(
     with tempfile.TemporaryDirectory(prefix="dataflow-offline-") as temp:
         bundle = Path(temp) / bundle_name
         bundle.mkdir()
-        for relative, source in {**required, **scripts}.items():
+        for relative, source in required.items():
             copy_required(source, bundle / relative)
+        for relative, source in scripts.items():
+            destination = bundle / relative
+            copy_required(source, destination)
+            os.chmod(destination, 0o755)
 
         runtime_source = f"{image_prefix.rstrip('/')}/dataflow-runtime:{version}"
         control_source = f"{image_prefix.rstrip('/')}/dataflow-control-plane:{version}"
