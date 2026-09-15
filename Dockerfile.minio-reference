@@ -11,7 +11,7 @@ RUN apk add --no-cache ca-certificates wget \
          arm64) minio_arch=arm64; checksum="$MINIO_SHA256_ARM64" ;; \
          *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
        esac \
-    && wget -q "https://dl.min.io/server/minio/release/linux-${minio_arch}/minio.${MINIO_RELEASE}" -O /usr/local/bin/minio \
+    && wget -q "https://dl.min.io/server/minio/release/linux-${minio_arch}/archive/minio.${MINIO_RELEASE}" -O /usr/local/bin/minio \
     && echo "$checksum  /usr/local/bin/minio" | sha256sum -c - \
     && chmod 0755 /usr/local/bin/minio \
     && apk del wget
