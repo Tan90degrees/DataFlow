@@ -16,7 +16,7 @@ from pathlib import Path
 KUBERAY_VERSION = "1.6.2"
 KUBERAY_OPERATOR_IMAGE = f"quay.io/kuberay/operator:v{KUBERAY_VERSION}"
 POSTGRES_IMAGE = "postgres:16-alpine"
-MINIO_IMAGE = "minio/minio:RELEASE.2025-09-07T16-13-09Z"
+MINIO_IMAGE = "dataflow-minio-reference:RELEASE.2025-09-07T16-13-09Z"
 ARCHES = {"amd64": "linux/amd64", "arm64": "linux/arm64"}
 
 
