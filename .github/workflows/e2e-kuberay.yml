@@ -7,6 +7,7 @@ on:
       - ".github/workflows/e2e-kuberay.yml"
       - "Dockerfile"
       - "Dockerfile.control-plane"
+      - "Dockerfile.minio-reference"
       - "e2e/kuberay/**"
       - "pyproject.toml"
       - "src/dataflow/**"
@@ -58,15 +59,20 @@ jobs:
           kubectl get crd rayjobs.ray.io rayclusters.ray.io
           kubectl get pods -n kuberay-system
 
-      - name: Build DataFlow images
+      - name: Build DataFlow and reference images
         run: |
           docker build -t dataflow-runtime:e2e -f Dockerfile .
           docker build -t dataflow-control-plane:e2e -f Dockerfile.control-plane .
+          docker build \
+            --build-arg TARGETARCH=amd64 \
+            -t dataflow-minio-reference:e2e \
+            -f Dockerfile.minio-reference .
 
       - name: Load images into kind
         run: |
           kind load docker-image --name dataflow-e2e dataflow-runtime:e2e
           kind load docker-image --name dataflow-e2e dataflow-control-plane:e2e
+          kind load docker-image --name dataflow-e2e dataflow-minio-reference:e2e
 
       - name: Run real KubeRay E2E
         env:
