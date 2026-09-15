@@ -7,6 +7,7 @@ on:
       - ".github/workflows/release.yml"
       - "Dockerfile"
       - "Dockerfile.control-plane"
+      - "Dockerfile.minio-reference"
       - "charts/dataflow/**"
       - "docs/offline-deployment.md"
       - "docs/releases.md"
@@ -33,7 +34,8 @@ env:
   KUBERAY_VERSION: "1.6.2"
   KUBERAY_OPERATOR_IMAGE: "quay.io/kuberay/operator:v1.6.2"
   POSTGRES_IMAGE: "postgres:16-alpine"
-  MINIO_IMAGE: "minio/minio:RELEASE.2025-09-07T16-13-09Z"
+  MINIO_RELEASE: "RELEASE.2025-09-07T16-13-09Z"
+  MINIO_REFERENCE_IMAGE: "dataflow-minio-reference:RELEASE.2025-09-07T16-13-09Z"
 
 jobs:
   validate:
@@ -173,6 +175,15 @@ jobs:
             --output "type=docker,dest=offline-input/images/dataflow-control-plane.tar" \
             -f Dockerfile.control-plane .
 
+          docker buildx build \
+            --platform "linux/$ARCH" \
+            --build-arg "MINIO_RELEASE=$MINIO_RELEASE" \
+            --tag "$MINIO_REFERENCE_IMAGE" \
+            --cache-from "type=gha,scope=offline-minio-$ARCH" \
+            --cache-to "type=gha,mode=max,scope=offline-minio-$ARCH" \
+            --output "type=docker,dest=offline-input/images/minio.tar" \
+            -f Dockerfile.minio-reference .
+
           save_vendor_image() {
             local image="$1"
             local output="$2"
@@ -182,7 +193,6 @@ jobs:
 
           save_vendor_image "$KUBERAY_OPERATOR_IMAGE" offline-input/images/kuberay-operator.tar
           save_vendor_image "$POSTGRES_IMAGE" offline-input/images/postgres.tar
-          save_vendor_image "$MINIO_IMAGE" offline-input/images/minio.tar
 
       - name: Assemble and verify offline bundle
         shell: bash
