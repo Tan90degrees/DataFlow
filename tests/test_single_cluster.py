@@ -3,11 +3,12 @@ from __future__ import annotations
 import subprocess
 import sys
 from collections import Counter
+from types import ModuleType
 from unittest.mock import Mock
 
 import pytest
 
-from dataflow.compiler import PipelineSpec
+from dataflow.graph import PipelineSpec
 from dataflow.sdk import Resources, pipeline, run_pipeline
 from dataflow.single_cluster import (
     PipelineExecutionError,
@@ -92,33 +93,6 @@ def test_fanout_reuses_object_store_data_without_artifact_io():
     ]
 
 
-@pytest.mark.parametrize(
-    "change, message",
-    [
-        ({"cluster_profile": "gpu"}, "ClusterProfiles"),
-        ({"artifact_base_uri": "s3://legacy"}, "artifact_base_uri"),
-        ({"runtime": {"image": "legacy:image"}}, "existing worker environment"),
-    ],
-)
-def test_legacy_settings_fail_before_io(change, message):
-    payload = example.to_dict()
-    payload.update(change)
-    backend = LazyBackend()
-    with pytest.raises(ValueError, match=message):
-        SingleClusterExecutor(backend).execute(PipelineSpec.model_validate(payload))
-    assert backend.calls == []
-
-
-@pytest.mark.parametrize("boundary", ["hard", "checkpoint"])
-def test_legacy_boundaries_do_not_silently_lose_durability(boundary):
-    spec = example.spec()
-    spec.edges[0].boundary = type(spec.edges[0].boundary)(boundary)
-    backend = LazyBackend()
-    with pytest.raises(ValueError, match="hard/checkpoint"):
-        SingleClusterExecutor(backend).execute(spec)
-    assert backend.calls == []
-
-
 def test_cycle_and_dangling_transform_are_rejected_before_io():
     payload = example.to_dict()
     payload["edges"].append({"from": "left", "to": "read", "kind": "control"})
@@ -163,33 +137,15 @@ def test_cli_runs_a_whole_json_pipeline_without_legacy_compilation(monkeypatch, 
     assert '"output_paths": {"left": "/left"}' in capsys.readouterr().out
 
 
-def test_legacy_commands_require_explicit_cluster_image():
-    from dataflow.compiler import compile_pipeline
-    from dataflow.contracts import ExecutionPlan, OperatorSpec
-    from dataflow.kuberay import render_rayjob
-
-    with pytest.raises(ValueError, match="legacy execution-island compiler"):
-        compile_pipeline(example.spec(), run_id="run")
-    spec = example.spec()
-    plan = ExecutionPlan(
-        run_id="run",
-        unit_id="unit",
-        runtime=spec.runtime,
-        operators=[
-            OperatorSpec(id=node.id, kind=node.kind, config=node.config, resources=node.resources)
-            for node in spec.nodes
-        ],
-    )
-    with pytest.raises(ValueError, match="legacy KubeRay"):
-        render_rayjob(plan)
-
-
 @pytest.fixture
 def ray_session(monkeypatch):
-    ray = pytest.importorskip("ray")
-    monkeypatch.setattr(ray, "is_initialized", Mock(return_value=False))
-    monkeypatch.setattr(ray, "init", Mock())
-    monkeypatch.setattr(ray, "shutdown", Mock())
+    ray = ModuleType("ray")
+    ray.data = ModuleType("ray.data")
+    monkeypatch.setitem(sys.modules, "ray", ray)
+    monkeypatch.setitem(sys.modules, "ray.data", ray.data)
+    monkeypatch.setattr(ray, "is_initialized", Mock(return_value=False), raising=False)
+    monkeypatch.setattr(ray, "init", Mock(), raising=False)
+    monkeypatch.setattr(ray, "shutdown", Mock(), raising=False)
     monkeypatch.setattr(SingleClusterExecutor, "execute", Mock(return_value="result"))
     monkeypatch.delenv("RAY_ADDRESS", raising=False)
     return ray
@@ -234,13 +190,13 @@ def test_disconnects_own_session_on_pipeline_failure(ray_session):
 def test_sdk_import_and_hash_need_no_control_plane_dependencies():
     code = """
 import sys
-for name in ("psycopg", "httpx", "kubernetes", "boto3", "ray"):
+for name in ("psycopg", "httpx", "kubernetes", "boto3", "ray", "yaml", "fastapi"):
     sys.modules[name] = None
 from dataflow.sdk import pipeline, run_pipeline
 @pipeline(name="minimal")
 def demo(flow):
     flow.read_parquet("/in").write_parquet("/out")
 assert len(demo.spec_hash()) == 64
-assert demo.spec().runtime.image is None
+assert set(demo.to_dict()) == {"api_version", "kind", "name", "nodes", "edges"}
 """
     subprocess.run([sys.executable, "-c", code], check=True, capture_output=True)

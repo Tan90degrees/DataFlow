@@ -1,14 +1,55 @@
 name: ci
 
 on:
+  pull_request:
   push:
     branches: [main]
-  pull_request:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: python -m pip install -e '.[dev]'
+      - run: ruff check . && ruff format --check .
+      - run: pytest --cov=dataflow --cov-report=term-missing
+      - name: Build distributions
+        if: matrix.python == '3.11'
+        run: python -m build
+      - name: Smoke test installed wheel without Ray
+        if: matrix.python == '3.11'
+        run: |
+          python -m venv /tmp/dataflow-wheel
+          /tmp/dataflow-wheel/bin/pip install dist/*.whl
+          /tmp/dataflow-wheel/bin/python -c 'from dataflow.sdk import pipeline, run_pipeline; import importlib.util; assert importlib.util.find_spec("ray") is None'
+          /tmp/dataflow-wheel/bin/dataflow-run --help
+      - name: Upload distributions
+        if: matrix.python == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+
   single-cluster:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 7
     env:
       DATAFLOW_TEST_RAY: "1"
     steps:
@@ -17,37 +58,18 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - name: Install single-cluster runtime
-        run: python -m pip install -e '.[dev,runtime]'
+      - run: python -m pip install -e '.[dev,runtime]'
       - name: Real Ray head and worker
-        run: pytest tests/test_single_cluster_ray.py -v
-  test:
-    runs-on: ubuntu-latest
-    env:
-      DATAFLOW_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/dataflow_test
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_DB: dataflow_test
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d dataflow_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+        run: timeout --kill-after=15s 240s python -m pytest tests/test_single_cluster_ray.py -v -s -o faulthandler_timeout=90
+      - name: Ray diagnostics on failure
+        if: failure()
+        run: |
+          find /tmp/ray -name '*.err' -type f -print -exec tail -n 40 {} \; 2>/dev/null || true
+          find /tmp/ray -name 'raylet.out' -type f -print -exec tail -n 40 {} \; 2>/dev/null || true
+      - name: Preserve Ray diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
         with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install
-        run: python -m pip install -e '.[dev]'
-      - name: Lint
-        run: ruff check .
-      - name: Test
-        run: pytest --cov=dataflow --cov-report=term-missing
+          name: ray-diagnostics
+          path: /tmp/ray/session_latest/logs/
+          if-no-files-found: ignore

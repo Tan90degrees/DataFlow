@@ -2,72 +2,80 @@
 
 English | [简体中文](README.zh-CN.md) · [Documentation](docs/README.md)
 
-A thin pipeline layer over **one existing, long-lived Ray cluster**. One driver executes the
-whole DAG with Ray Data. Operators exchange Dataset blocks through Ray's object store and
-node-to-node transport. DataFlow does not write intermediate Parquet files or use S3 to connect
-operators.
+A lightweight Python component for declarative pipelines in **one existing Ray cluster**.
+Operators exchange Ray Data Dataset blocks through Ray's object store and node-to-node transport.
+DataFlow does not create clusters or write intermediate files to pass data between operators.
 
-Ray Data owns streaming execution, fusion and backpressure. Ray owns task/actor placement and
-operator resource scheduling. DataFlow owns the declarative DAG, validation and execution entrypoint.
-Kubernetes/KubeRay may provision the shared cluster externally; DataFlow does not create clusters.
+Ray Data owns streaming, fusion and backpressure. Ray schedules each operator's tasks/actors.
+DataFlow provides the DAG, preflight validation, Python SDK and one JSON execution command.
 
-## Run a pipeline
+## Use
 
-Python 3.11+; install the runtime on the driver and workers:
+Python 3.11/3.12; preinstall the same runtime and business modules on driver and workers:
 
 ```bash
 pip install -e '.[runtime]'
 ```
 
-Connect to a cluster that is already running (on its head, `auto` discovers the existing cluster):
+Connect to the shared cluster that is already running:
 
 ```python
 from dataflow.sdk import Resources, pipeline, run_pipeline
 
+
 @pipeline(name="preprocess")
-def preprocess(flow, input_path, output_path):
-    dataset = flow.read_parquet(input_path, resources=Resources(cpu=0.25))
+def process(flow, source, target):
+    dataset = flow.read_parquet(source, resources=Resources(cpu=0.25))
     dataset = dataset.map_batches(
         "dataflow.callables.identity_batch",
         resources=Resources(cpu=1, memory_bytes=256 * 1024**2),
         batch_size=128,
     )
-    dataset.write_parquet(output_path, resources=Resources(cpu=0.25))
+    dataset.write_parquet(target, resources=Resources(cpu=0.25))
 
-result = run_pipeline(preprocess.spec("/shared/input", "/shared/output"))
+
+result = run_pipeline(process.spec("/shared/input", "/shared/output/run-001"))
 print(result.output_paths)
 ```
 
-Or run a JSON DAG:
+Edit the input/final output paths in the JSON example, then:
 
 ```bash
 dataflow-run examples/single_cluster.json --address auto
 ```
 
-There is no required API server, PostgreSQL, MinIO, ClusterProfile, runtime image declaration,
-controller or KubeRay operator in this path. The worker environment is installed when deploying
-the shared cluster. Set `RAY_ADDRESS`, pass `address=`, or reuse an application-owned `ray.init()`
-session. `local` is rejected; missing clusters cause connection failure instead of creating one.
+Use `RAY_ADDRESS`, an explicit `address=`, or an application-owned `ray.init()` session.
+`auto` requires an existing cluster; `local` is rejected. Input/final output paths must be
+accessible to workers. Intermediate data needs no S3 or shared-filesystem transfer protocol.
 
-See [single-cluster execution](docs/single-cluster.md) for branching, resources, deployment and
-migration. [examples/single_cluster.py](examples/single_cluster.py) is an executable SDK example.
-Input and final output paths must be accessible to the workers; a shared filesystem is sufficient.
+The base package requires only Pydantic; `runtime` adds Ray Data. There is no DataFlow server,
+database, controller, chart or separate service to deploy. The platform manages the shared cluster.
 
-## Development
+## Execution boundaries
+
+Linear chains stream lazily; branches reuse a materialized Dataset in the object store.
+Ray can spill blocks to its configured local disks under memory pressure. Supported operators
+are Parquet read/write, map_batches and filter, with fan-out and control dependencies.
+Independent sinks execute sequentially per driver; fan-in is not yet supported.
+
+The host owns durable request history, restart recovery and idempotent final writes. A failed
+pipeline may leave partial outputs. Use a distinct output directory per attempt; Ray's Parquet
+writer appends by default. See [architecture](docs/single-cluster.md) and
+[operations](docs/operations.md) for precise behavior.
+
+## Develop
 
 ```bash
 pip install -e '.[dev]'
 ruff check .
+ruff format --check .
 pytest
-# Optional real Ray head + worker test:
+python -m build
+# Optional real head + worker test:
 pip install -e '.[runtime]'
-DATAFLOW_TEST_RAY=1 pytest tests/test_single_cluster_ray.py
+DATAFLOW_TEST_RAY=1 pytest tests/test_single_cluster_ray.py -v -s
 ```
 
-## Legacy control plane
-
-The earlier PostgreSQL/API/KubeRay implementation remains for migration compatibility. Its
-execution-island compiler, per-unit RayJobs, ClusterProfiles and durable artifact publication
-are **not used by `run_pipeline` or `dataflow-run`**. Existing deployments keep their explicit
-legacy commands; see [legacy documentation](docs/README.md). This is the first migration step,
-not removal of those modules or production acceptance of the new path.
+Start with [getting started](docs/getting-started.md), [SDK reference](docs/sdk.md) or
+[runnable examples](examples/single_cluster.py). The 0.2 cleanup removes the former execution
+path and its interfaces; use the [migration guide](docs/migration.md) when updating old callers.

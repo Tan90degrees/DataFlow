@@ -1,7 +1,6 @@
-"""Public Python SDK for authoring and submitting DataFlow pipelines."""
+"""Python authoring and execution API for a shared Ray cluster."""
 
 from dataflow.contracts import ResourceSpec as Resources
-from dataflow.contracts import RuntimeSpec as Runtime
 from dataflow.sdk.builder import (
     DatasetNode,
     NodeHandle,
@@ -12,19 +11,7 @@ from dataflow.sdk.builder import (
 )
 from dataflow.single_cluster import PipelineExecutionError, PipelineResult, run_pipeline
 
-
-def __getattr__(name: str):
-    # The default execution path needs neither HTTP nor PostgreSQL dependencies.
-    if name in {"DataFlowApiError", "DataFlowClient", "Submission"}:
-        from dataflow.sdk import client
-
-        return getattr(client, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 __all__ = [
-    "DataFlowApiError",
-    "DataFlowClient",
     "DatasetNode",
     "NodeHandle",
     "PipelineBuilder",
@@ -32,8 +19,6 @@ __all__ = [
     "PipelineExecutionError",
     "PipelineResult",
     "Resources",
-    "Runtime",
-    "Submission",
     "callable_ref",
     "pipeline",
     "run_pipeline",

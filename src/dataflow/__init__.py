@@ -1,37 +1,22 @@
-"""DataFlow core package."""
+"""DataFlow: declarative pipelines in one shared Ray cluster."""
 
-from dataflow.compiler import (
-    EdgeKind,
-    ExecutionBoundary,
-    ExecutionGraph,
-    ExecutionUnit,
-    LogicalGraph,
-    PipelineCompiler,
-    PipelineEdgeSpec,
-    PipelineNodeSpec,
-    PipelineSpec,
-    compile_pipeline,
-)
-from dataflow.contracts import ExecutionPlan, OperatorKind, OperatorSpec, ResourceSpec, RuntimeSpec
+from dataflow.contracts import OperatorKind, OperatorSpec, ResourceSpec
+from dataflow.graph import EdgeKind, LogicalGraph, PipelineEdgeSpec, PipelineSpec
+from dataflow.single_cluster import PipelineExecutionError, PipelineResult, run_pipeline
 from dataflow.version import package_version
 
 __version__ = package_version()
 
 __all__ = [
     "EdgeKind",
-    "ExecutionBoundary",
-    "ExecutionGraph",
-    "ExecutionPlan",
-    "ExecutionUnit",
     "LogicalGraph",
     "OperatorKind",
     "OperatorSpec",
-    "PipelineCompiler",
     "PipelineEdgeSpec",
-    "PipelineNodeSpec",
+    "PipelineExecutionError",
+    "PipelineResult",
     "PipelineSpec",
     "ResourceSpec",
-    "RuntimeSpec",
     "__version__",
-    "compile_pipeline",
+    "run_pipeline",
 ]

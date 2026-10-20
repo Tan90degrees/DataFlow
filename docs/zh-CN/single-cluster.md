@@ -1,88 +1,44 @@
-# 单集群执行
+# 执行架构
 
 [English](../single-cluster.md) | 简体中文
 
-## 执行约定
+## 职责
 
-只部署一个常驻 Ray 集群。driver 调用 `run_pipeline(spec)`，把整个 DAG 构建为该集群中
-Ray Data Dataset 的变换。多个 driver、多个流水线共享 worker 资源池，不按任务或算子创建集群。
+| 组件 | 职责 |
+| --- | --- |
+| DataFlow SDK | 不初始化 Ray，只生成可序列化 DAG |
+| DAG 校验 | 检查引用、环、支持的拓扑、算子引用和资源冲突 |
+| 每次同步调用的 driver | 在当前唯一连接的集群中构建并消费 Ray Data 变换 |
+| Ray Data | 流式执行、算子融合、数据块并行和背压 |
+| Ray Core | task/actor 放置、对象存储、节点间数据传输 |
+| 宿主应用与平台 | 集群生命周期、依赖、请求状态与业务持久化 |
 
-同步 SDK 与 `dataflow-run` 不访问 PostgreSQL、Kubernetes、HTTP 控制面或制品注册表，
-也不创建、发布中间存储路径。DAG 只显式读业务输入、写最终输出，中间传递全部使用 Ray 数据块。
+规格只包含 `name`、`nodes`、`edges` 以及版本和类型标记，不含集群部署或工作流持久化策略。
+应用中的调用可以共享同一个 Ray 会话和 worker，由算子资源决定在该集群内使用的容量。
 
-线性链直到 sink 消费时才触发执行，Ray Data 可以进行流式处理、兼容算子融合与背压，
-普通算子之间不等待整份数据完成，也不把 Dataset 的实际数据收集到 driver。
+## 数据与执行
 
-同一 Dataset 存在多个消费者时，DataFlow 调用一次 `materialize()`，复用返回的
-对象存储 Dataset，避免每个 sink 重算公共前缀。这是执行和内存屏障，不是持久检查点。
-控制依赖同样先完成源节点再继续。最后一个消费者构建后释放相应 Dataset 句柄，
-下游仍引用的数据块继续由 Ray 保留。
+普通线性边直接衔接惰性 Dataset，sink 消费时触发执行，由 Ray Data 逐块推进。
+DataFlow 不把整份数据收集到 driver，也不插入中间 Parquet 写入、制品 URI 或存储服务调用。
 
-分支缓存可能超过对象存储内存，触发 Ray 配置的本地磁盘 spilling，本路径不配置 S3 spilling。
-应按分支共享工作集规划容量。同节点 Arrow/NumPy 数据可支持零拷贝访问，跨节点仍有网络传输，
-UDF 也可能分配自己的堆内存。
+一个数据节点有多个消费者时，先物化一次，再复用返回的 MaterializedDataset。
+成功执行时，各 sink 不会重算公共前缀。这是对象存储缓存和执行屏障，不是持久检查点。
+最后一个下游消费者构建后释放对应句柄，下游引用仍保留需要的数据块；故障后 Ray 可能重建或重试计算。
 
-## 连接与部署
+控制边要求源节点完成后才构建目标节点。变换作为控制源时会先物化，写出节点作为控制源时
+其 sink 操作已经结束。控制边不传数据，变换和 sink 仍需单独的一个数据输入。
 
-```bash
-pip install -e '.[runtime]'
-dataflow-run examples/single_cluster.json --address auto
-# 同网络内显式指定地址：
-dataflow-run examples/single_cluster.json --address ray-head:6379
-```
+driver 按确定的拓扑顺序处理节点和独立 sink，每个 sink 内部由 Ray 分布式执行。
+不同流水线 driver 可以在同一集群并发运行，DataFlow 不额外提供全局调度器或跨 driver 公平性保证。
 
-driver 和 worker 预装相同版本的 DataFlow/Ray 与业务模块。driver 在共享集群或可互通网络内运行，
-也可使用 Ray 支持的连接地址。普通 GCS 地址要求 worker 与 driver 之间也能互通，
-不只是开放 head 端口。算子使用可导入的顶层函数或 callable class，不按流水线动态安装镜像或依赖。
+## 内存与保证
 
-在集群节点上使用 `auto`，也可设置 `RAY_ADDRESS` 或传入 `address=`。未找到集群就失败，
-拒绝 `local`，包括通过 `RAY_ADDRESS` 设置的情况。宿主已经初始化 Ray 时，省略 `address`
-和 `namespace`，复用已有会话并保持连接；否则由 DataFlow 连接一次，在 `finally` 中断开，
-外部常驻集群继续运行。Ray 连接生命周期是进程级状态，同进程并发调用应共享宿主预先建立的会话。
+Ray 把块保存在分布式对象存储中，跨节点读取需要网络传输；同节点的兼容数据表示可支持零拷贝读取，
+UDF 仍可能分配堆内存。流式背压帮助约束工作集，但分支缓存需要完整的共享数据，
+内存不足时可能触发 Ray 已配置的本地磁盘 spilling。DataFlow 不配置远程 spilling，也不使用 S3 衔接算子。
 
-示例文件路径必须对 worker 可见。多节点使用共享文件系统或挂载存放输入和最终输出，
-Ray 中间对象传输不需要这个挂载。KubeRay 可以独立管理唯一的共享 RayCluster，无需 DataFlow 控制器。
+当前算子为 Parquet 读写、map_batches 和 filter，支持数据分支和控制依赖，不支持数据 fan-in。
+连接集群和业务 IO 之前完成校验；导入业务模块时，模块自己的初始化代码仍可能执行。
 
-## 资源与行为
-
-按算子声明 `Resources(cpu=..., gpu=..., memory_bytes=..., accelerator_type=...)`。
-读写算子通过 `ray_remote_args` 传递资源；map/filter 直接传给 Ray Data。
-加速器类型使用现有 worker 的 `ray.io/accelerator-type` 标签。`batch_size`、`concurrency`、
-actor 类构造参数等 Ray Data 设置保留在算子 config 内。CPU/内存资源是调度提示，不是操作系统硬限制，
-请求的资源必须能由同一集群中的某个 worker 满足。
-
-首版支持 Parquet 输入输出、map_batches、filter、数据分支与控制依赖。
-变换和 sink 各有一个数据输入，fan-in 在任何 IO 前拒绝。driver 按确定的拓扑顺序执行独立 sink，
-每个 sink 内由 Ray 分布式并行；多个流水线 driver 仍共享该集群。
-DataFlow 不额外实现全局公平性或准入调度器。
-
-返回值包含流水线名和最终输出路径。失败保留 Ray 原异常为 cause，并报告触发执行的节点；
-惰性执行时可能在 sink 处暴露上游 UDF 异常。任务和 actor 按 Ray 自身配置重试。
-本路径不提供持久工作流恢复，也不提供多个 sink 的 exactly-once 原子提交。
-失败可能留下较早完成的 sink 或部分输出，重试时使用独立运行目录或业务幂等写入；
-Parquet 写入沿用 Ray 默认 append 语义。
-
-## 从旧流水线迁移
-
-1. 删除 `runtime_image`、Kubernetes service account 与节点级运行环境覆盖，改为共享 worker 预装依赖。
-2. 删除具名 `cluster_profile` 选择，用算子资源在同一集群内选择容量。
-3. 删除 `artifact_base_uri`、`.checkpoint()` 和 `.hard_boundary()`，普通边和分支直接传 Ray 数据。
-   旧持久边界会明确校验失败，避免静默改变恢复语义。
-4. 把 HTTP 客户端 `submit` 替换为 `run_pipeline(spec)`，或使用 `dataflow-run`。
-5. 只保留业务输入输出路径，算子之间不需要 MinIO/S3 服务。
-
-旧命令和控制面模块暂留给已有部署，不参与新入口，也不符合这份新的执行约定。
-旧文档和早期 ADR 描述的是历史架构。完整移除控制面以及生产压力、故障验收属于后续工作，
-本路径目前不宣称具备这些保证。
-
-## 验证
-
-```bash
-pip install -e '.[dev,runtime]'
-ruff check .
-pytest
-DATAFLOW_TEST_RAY=1 pytest tests/test_single_cluster_ray.py
-```
-
-可选集成测试只为测试基础设施创建一个 head 和一个 worker，然后对同一个集群连续运行流水线，
-验证最终数据、连接归属和节点身份不变，不使用对象存储服务或 Kubernetes。
+组件不提供持久运行记录、进程重启恢复、多个 sink 的原子事务或工作流 exactly-once 保证。
+失败后可能留下已完成的较早 sink 或部分文件。Ray 内部重试遵循 Ray 的配置，宿主负责重提任务和业务幂等。

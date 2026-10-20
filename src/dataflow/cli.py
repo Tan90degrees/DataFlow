@@ -1,94 +1,25 @@
-"""Command-line entrypoints for DataFlow."""
+"""Execute a JSON pipeline against an existing Ray cluster."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 
-import yaml
-
-from dataflow.compiler import PipelineSpec, compile_pipeline
-from dataflow.contracts import ExecutionPlan
-from dataflow.kuberay import render_rayjob as build_rayjob
-from dataflow.runtime import execute_with_ray
+from dataflow.graph import PipelineSpec
 from dataflow.single_cluster import run_pipeline
 
 
 def run_pipeline_cli() -> None:
     parser = argparse.ArgumentParser(description="Execute a pipeline in one existing Ray cluster")
-    parser.add_argument("pipeline")
+    parser.add_argument("pipeline", help="JSON pipeline specification")
     parser.add_argument("--address", help="Existing Ray address (default: auto / RAY_ADDRESS)")
-    parser.add_argument("--namespace")
+    parser.add_argument("--namespace", help="Ray namespace for a new connection")
     args = parser.parse_args()
-    result = run_pipeline(
-        _load_pipeline(args.pipeline), address=args.address, namespace=args.namespace
-    )
+    spec = PipelineSpec.model_validate_json(Path(args.pipeline).read_text(encoding="utf-8"))
+    result = run_pipeline(spec, address=args.address, namespace=args.namespace)
     print(json.dumps({"pipeline_name": result.pipeline_name, "output_paths": result.output_paths}))
 
 
-def _load_plan(path: str) -> ExecutionPlan:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    return ExecutionPlan.model_validate(data)
-
-
-def _load_pipeline(path: str) -> PipelineSpec:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    return PipelineSpec.model_validate(data)
-
-
-def run_plan() -> None:
-    parser = argparse.ArgumentParser(description="Execute a DataFlow ExecutionPlan with Ray Data")
-    parser.add_argument("plan")
-    parser.add_argument("--attempt-number", type=int)
-    args = parser.parse_args()
-    execute_with_ray(_load_plan(args.plan), attempt_number=args.attempt_number)
-
-
-def render_rayjob() -> None:
-    parser = argparse.ArgumentParser(description="Render a KubeRay RayJob for a DataFlow plan")
-    parser.add_argument("plan")
-    parser.add_argument("--attempt-number", type=int)
-    args = parser.parse_args()
-    print(
-        yaml.safe_dump(
-            build_rayjob(_load_plan(args.plan), attempt_number=args.attempt_number),
-            sort_keys=False,
-        )
-    )
-
-
-def compile_pipeline_cli() -> None:
-    parser = argparse.ArgumentParser(description="Compile a DataFlow Pipeline into execution units")
-    parser.add_argument("pipeline")
-    parser.add_argument("--run-id", required=True)
-    args = parser.parse_args()
-    graph = compile_pipeline(_load_pipeline(args.pipeline), run_id=args.run_id)
-    print(graph.model_dump_json(indent=2))
-
-
-def run_inline_plan() -> None:
-    raw = os.environ.get("DATAFLOW_EXECUTION_PLAN")
-    if not raw:
-        raise RuntimeError("DATAFLOW_EXECUTION_PLAN is required")
-    attempt_raw = os.environ.get("DATAFLOW_ATTEMPT_NUMBER")
-    attempt_number = int(attempt_raw) if attempt_raw else None
-    execute_with_ray(
-        ExecutionPlan.model_validate_json(raw),
-        attempt_number=attempt_number,
-    )
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(prog="python -m dataflow.cli")
-    subcommands = parser.add_subparsers(dest="command", required=True)
-    subcommands.add_parser("run-inline-plan")
-    args = parser.parse_args()
-
-    if args.command == "run-inline-plan":
-        run_inline_plan()
-
-
 if __name__ == "__main__":
-    main()
+    run_pipeline_cli()

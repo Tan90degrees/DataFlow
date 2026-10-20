@@ -5,13 +5,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from dataflow.compiler import EdgeKind, ExecutionBoundary, LogicalGraph, PipelineSpec
-from dataflow.contracts import OperatorKind, OperatorSpec
+from dataflow.contracts import OperatorKind
+from dataflow.graph import EdgeKind, LogicalGraph, PipelineSpec
 from dataflow.runtime import (
     DatasetLike,
-    FilesystemResolver,
-    PlanExecutor,
+    OperatorExecutor,
     RayDataBackend,
+    operator_config,
     resolve_symbol,
 )
 
@@ -29,30 +29,12 @@ class PipelineExecutionError(RuntimeError):
 
 
 def validate_single_cluster(spec: PipelineSpec) -> LogicalGraph:
-    """Reject incompatible legacy semantics before connecting or performing any IO."""
+    """Validate the complete DAG before connecting or performing any IO."""
 
     graph = LogicalGraph(spec)
-    if spec.cluster_profile != "default" or any(
-        node.cluster_profile not in {None, "default"} for node in spec.nodes
-    ):
-        raise ValueError("single-cluster execution does not use ClusterProfiles")
-    if spec.runtime.image is not None or spec.runtime.service_account is not None:
-        raise ValueError(
-            "single-cluster execution uses the existing worker environment; remove "
-            "runtime.image and runtime.service_account"
-        )
-    if spec.artifact_base_uri is not None:
-        raise ValueError("single-cluster execution does not use artifact_base_uri")
-    for edge in spec.edges:
-        if edge.boundary in {ExecutionBoundary.HARD, ExecutionBoundary.CHECKPOINT}:
-            raise ValueError(
-                "single-cluster execution does not support legacy hard/checkpoint "
-                "boundaries; remove them or write an explicit output"
-            )
     for node_id in graph.topological_order:
         node = graph.nodes[node_id]
-        if node.runtime is not None and node.runtime != spec.runtime:
-            raise ValueError(f"node {node_id!r} cannot change runtime in one Ray cluster")
+        operator_config(node)
         incoming = graph.data_incoming(node_id)
         outgoing = graph.data_outgoing(node_id)
         if node.kind is OperatorKind.READ_PARQUET:
@@ -82,13 +64,8 @@ def validate_single_cluster(spec: PipelineSpec) -> LogicalGraph:
 class SingleClusterExecutor:
     """Build lazy Ray Data chains; materialize shared data once in the object store."""
 
-    def __init__(
-        self,
-        backend: RayDataBackend,
-        *,
-        filesystem_resolver: FilesystemResolver | None = None,
-    ) -> None:
-        self._operators = PlanExecutor(backend, filesystem_resolver=filesystem_resolver)
+    def __init__(self, backend: RayDataBackend) -> None:
+        self._operators = OperatorExecutor(backend)
 
     def execute(self, spec: PipelineSpec) -> PipelineResult:
         graph = validate_single_cluster(spec)
@@ -100,12 +77,7 @@ class SingleClusterExecutor:
             incoming = graph.data_incoming(node_id)
             dataset = datasets[incoming[0].from_node] if incoming else None
             try:
-                result = self._operators.apply_operator(
-                    dataset,
-                    OperatorSpec(
-                        id=node.id, kind=node.kind, config=node.config, resources=node.resources
-                    ),
-                )
+                result = self._operators.apply_operator(dataset, node)
                 if node.kind is OperatorKind.WRITE_PARQUET:
                     outputs[node_id] = node.config["path"]
                 elif result is not None:
@@ -144,17 +116,17 @@ def run_pipeline(
 
     owns_connection = not ray.is_initialized()
     if not owns_connection:
-        if address is not None or namespace is not None or spec.runtime.ray_address != "auto":
+        if address is not None or namespace is not None:
             raise ValueError(
                 "Ray is already initialized; omit address/namespace to reuse its session"
             )
     else:
-        requested = address if address is not None else spec.runtime.ray_address
+        requested = address if address is not None else "auto"
         if requested == "auto":
             requested = os.environ.get("RAY_ADDRESS") or "auto"
         if not requested.strip() or requested.strip().lower() == "local":
             raise ValueError("address must select an existing Ray cluster; 'local' is not allowed")
-        ray.init(address=requested, namespace=namespace or spec.runtime.namespace)
+        ray.init(address=requested, namespace=namespace if namespace is not None else "default")
     try:
         return SingleClusterExecutor(ray.data).execute(spec)
     finally:
