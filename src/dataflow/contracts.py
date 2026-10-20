@@ -39,8 +39,10 @@ class OperatorSpec(BaseModel):
 class RuntimeSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    image: str = Field(min_length=1)
-    ray_address: str = "auto"
+    # Existing-cluster execution uses the environment already installed on workers.
+    # Only the legacy KubeRay deployment path needs an image.
+    image: str | None = Field(default=None, min_length=1)
+    ray_address: str = Field(default="auto", min_length=1)
     namespace: str = "default"
     # Retained for backward-compatible standalone plans. ClusterProfile.service_account
     # is authoritative for newly compiled control-plane runs.

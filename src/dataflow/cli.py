@@ -13,6 +13,19 @@ from dataflow.compiler import PipelineSpec, compile_pipeline
 from dataflow.contracts import ExecutionPlan
 from dataflow.kuberay import render_rayjob as build_rayjob
 from dataflow.runtime import execute_with_ray
+from dataflow.single_cluster import run_pipeline
+
+
+def run_pipeline_cli() -> None:
+    parser = argparse.ArgumentParser(description="Execute a pipeline in one existing Ray cluster")
+    parser.add_argument("pipeline")
+    parser.add_argument("--address", help="Existing Ray address (default: auto / RAY_ADDRESS)")
+    parser.add_argument("--namespace")
+    args = parser.parse_args()
+    result = run_pipeline(
+        _load_pipeline(args.pipeline), address=args.address, namespace=args.namespace
+    )
+    print(json.dumps({"pipeline_name": result.pipeline_name, "output_paths": result.output_paths}))
 
 
 def _load_plan(path: str) -> ExecutionPlan:

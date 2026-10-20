@@ -10,7 +10,17 @@ from dataflow.sdk.builder import (
     callable_ref,
     pipeline,
 )
-from dataflow.sdk.client import DataFlowApiError, DataFlowClient, Submission
+from dataflow.single_cluster import PipelineExecutionError, PipelineResult, run_pipeline
+
+
+def __getattr__(name: str):
+    # The default execution path needs neither HTTP nor PostgreSQL dependencies.
+    if name in {"DataFlowApiError", "DataFlowClient", "Submission"}:
+        from dataflow.sdk import client
+
+        return getattr(client, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "DataFlowApiError",
@@ -19,9 +29,12 @@ __all__ = [
     "NodeHandle",
     "PipelineBuilder",
     "PipelineDefinition",
+    "PipelineExecutionError",
+    "PipelineResult",
     "Resources",
     "Runtime",
     "Submission",
     "callable_ref",
     "pipeline",
+    "run_pipeline",
 ]

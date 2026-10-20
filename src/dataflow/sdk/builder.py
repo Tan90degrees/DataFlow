@@ -16,7 +16,7 @@ from dataflow.compiler import (
     PipelineSpec,
 )
 from dataflow.contracts import OperatorKind, ResourceSpec, RuntimeSpec
-from dataflow.metadata.repository import canonical_spec_hash
+from dataflow.spec_hash import canonical_spec_hash
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -116,12 +116,12 @@ class PipelineBuilder:
         self,
         *,
         name: str,
-        runtime: RuntimeSpec,
+        runtime: RuntimeSpec | None = None,
         cluster_profile: str = "default",
         artifact_base_uri: str | None = None,
     ) -> None:
         self.name = name
-        self.runtime = runtime
+        self.runtime = runtime or RuntimeSpec()
         self.cluster_profile = cluster_profile
         self.artifact_base_uri = artifact_base_uri
         self._nodes: list[PipelineNodeSpec] = []
@@ -354,7 +354,7 @@ def _resolve_runtime(
         return runtime
     if runtime_image is not None:
         return RuntimeSpec(image=runtime_image)
-    raise ValueError("pipeline requires runtime or runtime_image")
+    return RuntimeSpec()
 
 
 __all__ = [

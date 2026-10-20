@@ -1,0 +1,46 @@
+{
+  "name": "single-cluster",
+  "nodes": [
+    {
+      "id": "read",
+      "kind": "read_parquet",
+      "config": {
+        "path": "/shared/input"
+      },
+      "resources": {
+        "cpu": 0.25
+      }
+    },
+    {
+      "id": "map",
+      "kind": "map_batches",
+      "config": {
+        "callable": "dataflow.callables.identity_batch",
+        "batch_size": 128
+      },
+      "resources": {
+        "cpu": 1
+      }
+    },
+    {
+      "id": "write",
+      "kind": "write_parquet",
+      "config": {
+        "path": "/shared/output"
+      },
+      "resources": {
+        "cpu": 0.25
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "read",
+      "to": "map"
+    },
+    {
+      "from": "map",
+      "to": "write"
+    }
+  ]
+}

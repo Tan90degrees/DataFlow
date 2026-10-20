@@ -154,6 +154,8 @@ def render_rayjob(
     *,
     attempt_number: int | None = None,
 ) -> dict[str, Any]:
+    if plan.runtime.image is None:
+        raise ValueError("the legacy KubeRay path requires runtime.image")
     if attempt_number is None:
         name = _dns_name(
             f"dataflow-{plan.run_id}-{plan.unit_id}",

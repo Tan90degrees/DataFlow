@@ -9,15 +9,16 @@ description = "Ray-native distributed data processing orchestration runtime"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "psycopg[binary]>=3.2,<4",
   "pydantic>=2.8,<3",
   "PyYAML>=6.0,<7",
 ]
 
 [project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.2,<4"]
 runtime = ["ray[data]==2.58.0"]
-control-plane = ["kubernetes>=30"]
+control-plane = ["kubernetes>=30", "psycopg[binary]>=3.2,<4"]
 api = [
+  "psycopg[binary]>=3.2,<4",
   "fastapi>=0.115,<1",
   "uvicorn>=0.30,<1",
 ]
@@ -29,6 +30,7 @@ observability = [
   "prometheus-client>=0.26,<1",
 ]
 dev = [
+  "psycopg[binary]>=3.2,<4",
   "build>=1.2,<2",
   "fastapi>=0.115,<1",
   "httpx>=0.27,<1",
@@ -40,6 +42,7 @@ dev = [
 ]
 
 [project.scripts]
+dataflow-run = "dataflow.cli:run_pipeline_cli"
 dataflow-runtime = "dataflow.cli:run_plan"
 dataflow-render-rayjob = "dataflow.cli:render_rayjob"
 dataflow-compile = "dataflow.cli:compile_pipeline_cli"

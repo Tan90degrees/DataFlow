@@ -5,6 +5,14 @@ English | [简体中文](zh-CN/README.md)
 Use this page as the documentation entry point. The English documents keep their existing paths;
 every document has a matching Simplified Chinese version under `docs/zh-CN/`.
 
+## Current execution path
+
+- [Single-cluster execution](single-cluster.md): the default lightweight SDK/CLI, Dataset block
+  transfer, operator resources and migration. No intermediate S3/Parquet or control plane.
+
+The deployment guides, API guides and ADRs below describe the **legacy control plane** and its
+per-unit RayJobs. They are retained for migration, not requirements for the current path.
+
 ## Start here
 
 - [Getting started](getting-started.md): install dependencies, start the isolated local Kubernetes

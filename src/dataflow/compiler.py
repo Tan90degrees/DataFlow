@@ -62,7 +62,7 @@ class PipelineSpec(BaseModel):
     api_version: Literal["dataflow.io/v1alpha1"] = "dataflow.io/v1alpha1"
     kind: Literal["Pipeline"] = "Pipeline"
     name: str = Field(min_length=1)
-    runtime: RuntimeSpec
+    runtime: RuntimeSpec = Field(default_factory=RuntimeSpec)
     cluster_profile: str = Field(default="default", min_length=1)
     artifact_base_uri: str | None = None
     nodes: list[PipelineNodeSpec] = Field(min_length=1)
@@ -176,6 +176,11 @@ class PipelineCompiler:
         cluster_profiles: Mapping[str, ClusterProfileSnapshot] | None = None,
     ) -> ExecutionGraph:
         graph = LogicalGraph(spec)
+        if any((node.runtime or spec.runtime).image is None for node in spec.nodes):
+            raise ValueError(
+                "the legacy execution-island compiler requires runtime.image; "
+                "use run_pipeline for an existing Ray cluster"
+            )
         self._validate_supported_data_topology(graph)
         self._validate_profile_requests(graph, cluster_profiles)
 

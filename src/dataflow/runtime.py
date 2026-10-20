@@ -13,6 +13,7 @@ from dataflow.contracts import ExecutionPlan, OperatorKind, OperatorSpec, Resour
 
 
 class DatasetLike(Protocol):
+    def materialize(self) -> DatasetLike: ...
     def map_batches(self, fn: Callable[..., Any] | type, **kwargs: Any) -> DatasetLike: ...
     def filter(self, fn: Callable[..., Any], **kwargs: Any) -> DatasetLike: ...
     def write_parquet(self, path: str, **kwargs: Any) -> Any: ...
@@ -48,14 +49,14 @@ class PlanExecutor:
         dataset: DatasetLike | None = None
         artifact_outputs = {output.operator_id: output for output in plan.output_artifacts}
         for operator in plan.operators:
-            dataset = self._apply(
+            dataset = self.apply_operator(
                 dataset,
                 operator,
                 artifact_output=artifact_outputs.get(operator.id),
                 attempt_number=attempt_number,
             )
 
-    def _apply(
+    def apply_operator(
         self,
         dataset: DatasetLike | None,
         operator: OperatorSpec,
@@ -67,6 +68,10 @@ class PlanExecutor:
 
         if operator.kind is OperatorKind.READ_PARQUET:
             path = _pop_required(config, "path", operator)
+            remote_args = dict(config.pop("ray_remote_args", {}))
+            _apply_worker_resources(remote_args, operator.resources)
+            if remote_args:
+                config["ray_remote_args"] = remote_args
             path = self._apply_filesystem(path, config)
             return self._backend.read_parquet(path, **config)
 
@@ -84,6 +89,10 @@ class PlanExecutor:
             return dataset.filter(resolve_symbol(callable_path), **config)
 
         if operator.kind is OperatorKind.WRITE_PARQUET:
+            remote_args = dict(config.pop("ray_remote_args", {}))
+            _apply_worker_resources(remote_args, operator.resources)
+            if remote_args:
+                config["ray_remote_args"] = remote_args
             if artifact_output is not None:
                 if attempt_number is None:
                     raise RuntimeError(

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,6 +14,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from dataflow.compiler import ExecutionGraph
+from dataflow.spec_hash import canonical_spec_hash
 from dataflow.state import (
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
@@ -707,16 +706,6 @@ class PostgresMetadataRepository:
             payload_json=row["payload_json"],
             created_at=row["created_at"],
         )
-
-
-def canonical_spec_hash(spec: Mapping[str, Any]) -> str:
-    canonical = json.dumps(
-        spec,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
-    return hashlib.sha256(canonical).hexdigest()
 
 
 __all__ = [

@@ -6,6 +6,21 @@ on:
   pull_request:
 
 jobs:
+  single-cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DATAFLOW_TEST_RAY: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install single-cluster runtime
+        run: python -m pip install -e '.[dev,runtime]'
+      - name: Real Ray head and worker
+        run: pytest tests/test_single_cluster_ray.py -v
   test:
     runs-on: ubuntu-latest
     env:
