@@ -35,15 +35,17 @@ def test_multiple_pipelines_share_one_cluster_and_transfer_blocks(tmp_path):
     print("Creating test cluster", flush=True)
     cluster = Cluster()
     try:
+        # Use Ray's actual node address: ray.init normalizes loopback to the LAN IP.
         print("Starting head", flush=True)
         cluster.add_node(
             num_cpus=0,
-            node_ip_address="127.0.0.1",
             include_dashboard=False,
             object_store_memory=100 * 1024**2,
         )
-        cluster.add_node(num_cpus=2, node_ip_address="127.0.0.1", object_store_memory=100 * 1024**2)
+        print("Starting worker", flush=True)
+        cluster.add_node(num_cpus=2, object_store_memory=100 * 1024**2)
         cluster.wait_for_nodes()
+        print(f"Connecting drivers to {cluster.address}", flush=True)
         # The runner must connect and disconnect; the pre-existing cluster remains alive.
         for index in range(2):
             print(f"Running pipeline {index}", flush=True)
