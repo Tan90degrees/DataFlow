@@ -11,7 +11,9 @@ requires-python = ">=3.11"
 dependencies = ["pydantic>=2.8,<3"]
 
 [project.optional-dependencies]
-runtime = ["ray[data]==2.58.0"]
+# Ray probes fsspec's HTTP adapter even for local paths. Its optional imports
+# must succeed when independent DAG actions first perform IO concurrently.
+runtime = ["ray[data]==2.58.0", "fsspec[http]"]
 dev = ["build>=1.2,<2", "pytest>=8.3,<9", "pytest-cov>=5,<6", "ruff>=0.6,<1"]
 
 [project.scripts]

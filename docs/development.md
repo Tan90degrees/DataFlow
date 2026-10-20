@@ -54,7 +54,9 @@ python -m build
 docker build -t dataflow-runtime:0.2.0 .
 ```
 
-The base package requires only Pydantic. `runtime` adds Ray Data; `dev` adds build/test tools.
+The base package requires only Pydantic. `runtime` adds Ray Data and fsspec's HTTP dependencies;
+Ray probes that adapter even for local paths, so its imports must succeed during concurrent
+first-use IO. `dev` adds build/test tools.
 The Dockerfile adds no control service and starts no cluster automatically. The platform chooses
 the head/worker commands and can extend the image with business modules.
 

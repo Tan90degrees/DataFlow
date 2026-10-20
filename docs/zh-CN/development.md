@@ -50,7 +50,9 @@ python -m build
 docker build -t dataflow-runtime:0.2.0 .
 ```
 
-基础包只依赖 Pydantic，`runtime` 添加 Ray Data，`dev` 添加构建测试工具。
+基础包只依赖 Pydantic，`runtime` 添加 Ray Data 和 fsspec 的 HTTP 依赖。
+Ray 即使操作本地路径也会探测该适配器，因此并发首次 IO 时必须能完整导入其依赖。
+`dev` 添加构建测试工具。
 Dockerfile 不启动管控服务，也不自动创建集群，由平台决定 head/worker 启动命令并加入业务模块。
 
 该分支进行 0.2 破坏性 API 清理，生成产物不等于已发布版本；审阅、打标签和发布是独立仓库操作。
