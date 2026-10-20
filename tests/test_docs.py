@@ -17,9 +17,6 @@ def documentation_pairs() -> list[tuple[Path, Path]]:
         for english in sorted(DOCS.rglob("*.md"))
         if ZH_CN not in english.parents
     )
-    pairs.append(
-        (ROOT / "e2e/kuberay/README.md", ROOT / "e2e/kuberay/README.zh-CN.md")
-    )
     return pairs
 
 
@@ -58,6 +55,4 @@ def test_local_markdown_links_resolve() -> None:
             if not target or target.startswith(("http://", "https://", "mailto:")):
                 continue
             resolved = (document.parent / target).resolve()
-            assert resolved.exists(), (
-                f"broken link in {document.relative_to(ROOT)}: {raw_target}"
-            )
+            assert resolved.exists(), f"broken link in {document.relative_to(ROOT)}: {raw_target}"

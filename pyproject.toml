@@ -4,53 +4,26 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dataflow-orchestrator"
-version = "0.1.0"
-description = "Ray-native distributed data processing orchestration runtime"
+version = "0.2.0"
+description = "Lightweight declarative pipelines for one shared Ray cluster"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = [
-  "psycopg[binary]>=3.2,<4",
-  "pydantic>=2.8,<3",
-  "PyYAML>=6.0,<7",
-]
+dependencies = ["pydantic>=2.8,<3"]
 
 [project.optional-dependencies]
-runtime = ["ray[data]==2.58.0"]
-control-plane = ["kubernetes>=30"]
-api = [
-  "fastapi>=0.115,<1",
-  "uvicorn>=0.30,<1",
-]
-sdk = ["httpx>=0.27,<1"]
-artifacts = ["boto3>=1.35,<2"]
-observability = [
-  "opentelemetry-api>=1.44,<2",
-  "opentelemetry-sdk>=1.44,<2",
-  "prometheus-client>=0.26,<1",
-]
-dev = [
-  "build>=1.2,<2",
-  "fastapi>=0.115,<1",
-  "httpx>=0.27,<1",
-  "opentelemetry-api>=1.44,<2",
-  "prometheus-client>=0.26,<1",
-  "pytest>=8.3,<9",
-  "pytest-cov>=5,<6",
-  "ruff>=0.6,<1",
-]
+# Ray probes fsspec's HTTP adapter even for local paths. Its optional imports
+# must succeed when independent DAG actions first perform IO concurrently.
+runtime = ["ray[data]==2.58.0", "fsspec[http]"]
+dev = ["build>=1.2,<2", "pytest>=8.3,<9", "pytest-cov>=5,<6", "ruff>=0.6,<1"]
 
 [project.scripts]
-dataflow-runtime = "dataflow.cli:run_plan"
-dataflow-render-rayjob = "dataflow.cli:render_rayjob"
-dataflow-compile = "dataflow.cli:compile_pipeline_cli"
-dataflow-migrate = "dataflow.metadata.migrations:main"
-dataflow-api = "dataflow.api_entrypoint:main"
-dataflow-controller = "dataflow.controller_app:main"
-dataflow-gc = "dataflow.gc_app:main"
-dataflow-check-release = "dataflow.release_contract:main"
+dataflow-run = "dataflow.cli:run_pipeline_cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dataflow"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "examples", "benchmarks", "docs", "README.md", "README.zh-CN.md", "LICENSE", "pyproject.toml", "Dockerfile"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
