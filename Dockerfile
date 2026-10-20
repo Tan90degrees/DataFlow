@@ -5,7 +5,7 @@ USER root
 WORKDIR /opt/dataflow
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN python -m pip install --no-cache-dir .
+RUN python -m pip install --no-cache-dir '.[runtime]'
 
 USER ray
 WORKDIR /home/ray

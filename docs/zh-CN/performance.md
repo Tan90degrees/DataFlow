@@ -48,6 +48,24 @@ worker 进程 RSS 高水位和验证后的输出行数。延迟从有界输入�
 真实 OCR/页/BOX 负载需单独测量 worker 堆、对象存储与 spill 峰值。
 基准只断言正确性，不预设加速比例。
 
+## 已观测的 CI 样本
+
+[CI 第 133 次运行](https://github.com/Tan90degrees/DataFlow/actions/runs/39397605284) 使用
+零 CPU 的 head 和两 CPU 的 worker，四个 DAG，每个输入 512 行，batch 64，payload 128 字节，
+每个 batch 用 10 ms 延迟模拟 IO。每种策略均校验了 4,096 行最终输出。
+
+| 策略 | 总耗时（秒） | DAG/s | 观测 P95（秒） |
+| --- | ---: | ---: | ---: |
+| serial-cached | 1.507 | 2.65 | 0.766 |
+| parallel-sinks-cached | 1.730 | 2.31 | 1.225 |
+| parallel-dags-cached | 0.853 | 4.69 | 0.851 |
+| parallel-dags-recompute | 1.282 | 3.12 | 1.281 |
+
+这次小样本比较的是新版内部的调度/缓存策略，没有与已删除的旧架构做对照。
+四 DAG 并发并缓存的吞吐是串行策略的 1.77 倍，仅并发 sink 反而更慢。
+小任务中，额外调度、计划执行和内存压力可能抵消重叠收益。
+应使用代表性负载反复测量后选择并发上限和缓存位置；四个观测值不能确立生产 P95 或通用加速结论。
+
 ## CI 与验收
 
 真实 head/worker 测试使用四个 DAG 和较小数据运行同一基准，上传 `dag-benchmark` 工作流产物中的

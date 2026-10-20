@@ -55,6 +55,25 @@ Small CI samples cannot establish production P95 or sustained throughput. Measur
 heap, object-store and spill peaks separately for representative OCR/page/BOX workloads.
 The benchmark asserts correctness, never an assumed speedup ratio.
 
+## Observed CI sample
+
+[CI run 133](https://github.com/Tan90degrees/DataFlow/actions/runs/39397605284) used one head
+with zero CPUs and one worker with two CPUs, four DAGs, 512 rows per DAG, batches of 64,
+128-byte payloads and a 10 ms simulated IO delay per batch. Each case validated 4,096 output rows.
+
+| Strategy | Elapsed (s) | DAG/s | Observed P95 (s) |
+| --- | ---: | ---: | ---: |
+| serial-cached | 1.507 | 2.65 | 0.766 |
+| parallel-sinks-cached | 1.730 | 2.31 | 1.225 |
+| parallel-dags-cached | 0.853 | 4.69 | 0.851 |
+| parallel-dags-recompute | 1.282 | 3.12 | 1.281 |
+
+This single small sample compares scheduling/cache policies in the new implementation, not
+the removed architecture. Four concurrent cached DAGs achieved 1.77 times the serial throughput;
+parallel sinks alone were slower. Extra scheduling, plan execution and memory pressure can
+outweigh overlap on small tasks. Use representative repeated measurements to choose limits and
+cache points; these four observations do not establish a production P95 or a general speedup.
+
 ## CI and acceptance
 
 The opt-in head/worker suite runs the same benchmark with four DAGs and a smaller dataset. It
