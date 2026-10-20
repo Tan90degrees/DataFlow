@@ -65,3 +65,13 @@ failover, memory or fairness guarantees as proven without the corresponding work
 Every Markdown document under `docs/` has a matching `docs/zh-CN/` page and language-switch link.
 Documentation tests validate pairing and local links. Keep runnable commands and schema names
 consistent across both languages.
+
+
+## Concurrent DAG verification
+
+`src/dataflow/runner.py` owns bounded in-process multi-DAG admission and the shared action pool.
+`tests/test_dag_concurrency.py` proves overlap, dependency ordering, backpressure/cancellation,
+failure draining, merge ports and immutable submission snapshots with deterministic events.
+The real Ray module shares one head/worker fixture for session reuse, union/join semantics and
+bounded-runner execution. It also emits the benchmark described in [performance](performance.md).
+Production correctness/throughput/memory claims require representative workload evidence.

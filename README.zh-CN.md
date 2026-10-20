@@ -53,9 +53,16 @@ dataflow-run examples/single_cluster.json --address auto
 
 ## 执行边界
 
-线性链惰性流式执行，分支复用对象存储中物化的 Dataset。内存压力下，Ray 可以溢写到其配置的本地磁盘。
-支持 Parquet 读写、map_batches、filter、数据分支和控制依赖；每个 driver 内独立 sink 暂时串行，
-尚不支持数据 fan-in。
+线性链保持惰性执行，就绪节点和独立 sink 有界并发。共享前缀默认允许不同分支重算，
+显式 `.cache()` 才物化一次并在对象存储中复用；控制依赖也会产生完成屏障。
+缓存超出内存时，Ray 可能溢写到配置的本地磁盘。
+
+支持 Parquet 读写、map_batches、filter、同 schema 的 `union` 和按键 `join`。
+union 追加行；join 需要明确的键和分区数，并使用 Ray 的 shuffle 路径。
+
+多个 DAG 使用常驻 `PipelineRunner`：限制活动及排队 DAG，共享固定节点执行池。
+参见[多文件并发示例](examples/concurrent_dags.py)、[SDK 参考](docs/zh-CN/sdk.md)
+和[性能实验](docs/zh-CN/performance.md)。
 
 持久请求记录、重启恢复和最终写入幂等由宿主负责。失败可能留下部分输出，
 每次尝试应使用独立目录，Ray 的 Parquet writer 默认追加写入。

@@ -21,7 +21,7 @@ dataflow-run = "dataflow.cli:run_pipeline_cli"
 packages = ["src/dataflow"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "tests", "examples", "docs", "README.md", "README.zh-CN.md", "LICENSE", "pyproject.toml", "Dockerfile"]
+include = ["src", "tests", "examples", "benchmarks", "docs", "README.md", "README.zh-CN.md", "LICENSE", "pyproject.toml", "Dockerfile"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

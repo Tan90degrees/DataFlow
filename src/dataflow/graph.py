@@ -23,6 +23,7 @@ class PipelineEdgeSpec(BaseModel):
     from_node: str = Field(alias="from", min_length=1)
     to_node: str = Field(alias="to", min_length=1)
     kind: EdgeKind = EdgeKind.DATA
+    input_index: int = Field(default=0, ge=0)
 
 
 class PipelineSpec(BaseModel):
@@ -52,6 +53,8 @@ class PipelineSpec(BaseModel):
             if key in seen:
                 raise ValueError(f"duplicate edge: {edge.from_node} -> {edge.to_node}")
             seen.add(key)
+            if edge.kind is EdgeKind.CONTROL and edge.input_index != 0:
+                raise ValueError("control edges cannot have an input_index")
         return self
 
 
@@ -75,7 +78,7 @@ class LogicalGraph:
     def data_incoming(self, node_id: str) -> list[PipelineEdgeSpec]:
         return sorted(
             (edge for edge in self.incoming[node_id] if edge.kind is EdgeKind.DATA),
-            key=lambda edge: (edge.from_node, edge.to_node),
+            key=lambda edge: (edge.input_index, edge.from_node, edge.to_node),
         )
 
     def data_outgoing(self, node_id: str) -> list[PipelineEdgeSpec]:

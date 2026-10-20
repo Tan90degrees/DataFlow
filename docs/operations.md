@@ -67,3 +67,26 @@ capacity/labels and actor concurrency. Input path errors usually indicate missin
 
 Cluster/driver restart recovery, retention of final business outputs, admission/fairness and
 availability guarantees belong to the hosting system and require workload-specific acceptance.
+
+
+## Bounded concurrent DAG admission
+
+Prefer one PipelineRunner per application process for high concurrency. Defaults are 8 active
+DAGs, 32 physically queued DAGs and 8 globally executing node actions. These are scheduling/
+admission limits, not duplicate CPU/memory budgets; actual tasks/actors use operator Resources.
+The runner has fixed idle-waiting coordinator threads and a shared action pool, not a thread
+pool per file. Queued cancellation does not free physical queue capacity until removal.
+
+Use iter_completed for large input iterables. Keeping every submit Future/result forever in
+host code can still consume unbounded host memory. Watch snapshot counters alongside Ray worker,
+object-store and spill metrics. Increasing DAG concurrency can worsen memory pressure or hold
+more model actors; there is no cross-DAG model cache or automatic adaptive admission yet.
+
+Choose .cache() when saving expensive prefix computation outweighs the full dataset's memory
+and barrier cost. Default recomputation requires pure/idempotent transforms. Keyed joins perform
+shuffle and can retain inputs; tune num_partitions and aggregator Resources to worker capacity.
+Schema discovery may sample/execute transforms, even before a final sink starts.
+
+The runner drains already-started work before disconnecting or returning observed batch failure.
+This is graceful cleanup, not immediate cancellation or a rollback. Output directories across
+concurrent DAGs/sinks must be distinct unless the business sink explicitly coordinates writes.

@@ -12,3 +12,4 @@ The package has no server or database to deploy.
 - [Development and verification](development.md): tests, packaging, containers and CI.
 - [Migration to 0.2](migration.md): removed interfaces and replacement commands.
 - [Roadmap](roadmap.md): current capabilities and remaining acceptance work.
+- [Performance experiments](performance.md): reproducible concurrent DAG benchmarks and measurement limits.

@@ -2,19 +2,22 @@
 
 English | [简体中文](zh-CN/roadmap.md)
 
-Current implementation: a serializable DAG/SDK, preflight validation, per-worker resource hints,
-one existing Ray cluster, lazy linear execution, cached data fan-out, control dependencies,
-synchronous results and errors, and a small JSON CLI. Sources/sinks are currently Parquet.
-The source tree and documentation describe this one execution path only.
+Implemented: serializable SDK/JSON DAGs, data/control dependencies, bounded independent-node and
+sink concurrency, explicit cache barriers, same-schema union and keyed shuffle join, and a
+long-lived runner with bounded DAG admission and completion-order streaming of results.
+All execute in one existing Ray cluster, with no storage-backed intermediate protocol.
 
-Next acceptance work is workload-driven: real cluster stability, sustained throughput and tail
-latency, mixed CPU/IO/model stages, object-store/spill pressure, worker loss, driver failure,
-resubmission and host-owned idempotency. A green unit suite is not production acceptance.
+Unit tests exercise concurrency overlap/bounds, queue backpressure, cancellation, failure draining,
+input windows, mutable spec snapshots and merge ports. Real Ray tests and a reproducible synthetic
+benchmark validate actual execution separately. Benchmark results are workload-specific; a green
+suite is not production acceptance or a global-optimality claim.
 
-Potential functional work includes more source/sink types, explicit fan-in semantics, efficient
-streaming fan-out and better host-facing progress/cancellation integration. Independent sinks
-currently execute sequentially per driver. These are not implemented commitments or performance
-claims, and should be justified by a concrete use case.
+Next work: representative OCR/page/BOX workloads, sustained throughput and latency under memory
+pressure, object-store/spill peak measurement, worker/driver failure acceptance, smarter sharing
+policies, model actor reuse across DAGs, and optional host-facing progress/cancellation integration.
+Default fan-out may recompute and join may materialize/shuffle; zero-copy streaming broadcast,
+automatic memory-aware admission and cluster-wide fairness are not implemented.
 
-Multi-cluster orchestration, a standalone database/control plane, auth/audit services and
-storage-backed intermediate artifact protocols are outside the current component's scope.
+Cluster lifecycle, durable request history, host resubmission and business idempotency remain
+host responsibilities. Multi-cluster orchestration, standalone auth/audit/database/control-plane
+services and S3 intermediate artifact protocols remain outside this component's scope.

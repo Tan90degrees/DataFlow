@@ -60,7 +60,14 @@ jobs:
           cache: pip
       - run: python -m pip install -e '.[dev,runtime]'
       - name: Real Ray head and worker
-        run: timeout --kill-after=15s 240s python -m pytest tests/test_single_cluster_ray.py -v -s -o faulthandler_timeout=90
+        run: timeout --kill-after=15s 300s python -m pytest tests/test_single_cluster_ray.py -v -s -o faulthandler_timeout=90
+      - name: Preserve DAG benchmark
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dag-benchmark
+          path: test-artifacts/dag-benchmark.json
+          if-no-files-found: ignore
       - name: Ray diagnostics on failure
         if: failure()
         run: |

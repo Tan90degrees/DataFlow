@@ -24,6 +24,37 @@ class NodeHandle:
 
 @dataclass(frozen=True, slots=True)
 class DatasetNode(NodeHandle):
+    def cache(self) -> DatasetNode:
+        """Materialize this node once per run, reusing blocks across consumers."""
+        self.builder._require_owned(self)
+        self.builder._nodes_by_id[self.node_id].cache = True
+        return self
+
+    def union(self, *others: DatasetNode, node_id: str | None = None) -> DatasetNode:
+        """Append rows of same-schema datasets in input order; never align or deduplicate."""
+        return self.builder._merge(OperatorKind.UNION, (self, *others), node_id=node_id)
+
+    def join(
+        self,
+        right: DatasetNode,
+        *,
+        on: str | list[str],
+        num_partitions: int,
+        join_type: str = "inner",
+        node_id: str | None = None,
+        resources: ResourceSpec | None = None,
+        **config: Any,
+    ) -> DatasetNode:
+        """Key-based shuffle join with explicit partition count and left/right ports."""
+        config.update(
+            on=[on] if isinstance(on, str) else on,
+            num_partitions=num_partitions,
+            join_type=join_type,
+        )
+        return self.builder._merge(
+            OperatorKind.JOIN, (self, right), node_id=node_id, resources=resources, config=config
+        )
+
     def map_batches(
         self,
         fn: str | Callable[..., Any] | type,
@@ -84,6 +115,7 @@ class PipelineBuilder:
         self.name = name
         self._nodes: list[OperatorSpec] = []
         self._edges: list[PipelineEdgeSpec] = []
+        self._nodes_by_id: dict[str, OperatorSpec] = {}
         self._node_ids: set[str] = set()
         self._sequence = 0
 
@@ -119,10 +151,7 @@ class PipelineBuilder:
         source: DatasetNode | None = None,
     ) -> str:
         if source is not None:
-            if source.builder is not self:
-                raise ValueError("cannot connect nodes from different PipelineBuilder instances")
-            if source.node_id not in self._node_ids:
-                raise ValueError(f"unknown SDK node: {source.node_id!r}")
+            self._require_owned(source)
         if node_id is None:
             self._sequence += 1
             node_id = f"{kind.value.replace('_', '-')}-{self._sequence:03d}"
@@ -137,9 +166,46 @@ class PipelineBuilder:
             )
         )
         self._node_ids.add(node_id)
+        self._nodes_by_id[node_id] = self._nodes[-1]
         if source is not None:
             self._edges.append(PipelineEdgeSpec(from_node=source.node_id, to_node=node_id))
         return node_id
+
+    def _require_owned(self, node: NodeHandle) -> None:
+        if node.builder is not self:
+            raise ValueError("cannot connect nodes from different PipelineBuilder instances")
+        if node.node_id not in self._node_ids:
+            raise ValueError(f"unknown SDK node: {node.node_id!r}")
+
+    def after(self, source: NodeHandle, target: NodeHandle) -> None:
+        """Require completed source work before constructing the target's data plan."""
+        self._require_owned(source)
+        self._require_owned(target)
+        self._edges.append(
+            PipelineEdgeSpec(from_node=source.node_id, to_node=target.node_id, kind="control")
+        )
+
+    def _merge(
+        self,
+        kind: OperatorKind,
+        inputs: tuple[DatasetNode, ...],
+        *,
+        node_id: str | None,
+        resources: ResourceSpec | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> DatasetNode:
+        if len(inputs) < 2:
+            raise ValueError("a merge requires at least two datasets")
+        for node in inputs:
+            self._require_owned(node)
+        if len({node.node_id for node in inputs}) != len(inputs):
+            raise ValueError("merge inputs must be distinct nodes")
+        target = self._add(kind, node_id=node_id, resources=resources, config=config or {})
+        self._edges.extend(
+            PipelineEdgeSpec(from_node=node.node_id, to_node=target, input_index=index)
+            for index, node in enumerate(inputs)
+        )
+        return DatasetNode(self, target)
 
 
 class PipelineDefinition(Generic[P]):

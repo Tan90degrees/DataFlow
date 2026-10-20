@@ -7,7 +7,15 @@ from dataflow.runtime import OperatorExecutor, operator_config
 from tests.test_single_cluster import LazyBackend
 
 
-@pytest.mark.parametrize("kind", list(OperatorKind))
+@pytest.mark.parametrize(
+    "kind",
+    [
+        OperatorKind.READ_PARQUET,
+        OperatorKind.MAP_BATCHES,
+        OperatorKind.FILTER,
+        OperatorKind.WRITE_PARQUET,
+    ],
+)
 def test_resource_hints_and_accelerator_labels_reach_each_ray_operator(kind):
     config = (
         {"path": "/data"}

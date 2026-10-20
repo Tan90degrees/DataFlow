@@ -4,51 +4,66 @@ English | [简体中文](zh-CN/single-cluster.md)
 
 ## Responsibilities
 
-| Component | Responsibility |
-| --- | --- |
-| DataFlow SDK | Generate a serializable DAG without initializing Ray |
-| DAG validation | Check references, cycles, supported topology, callables and resource conflicts |
-| One driver per synchronous call | Build and consume Ray Data transformations in a single connected cluster |
-| Ray Data | Streaming, operator fusion, block-level execution and backpressure |
-| Ray Core | Task/actor placement, object storage and node-to-node data transport |
-| Hosting application/platform | Cluster lifecycle, dependencies, request state and business persistence |
+DataFlow validates a static data/control DAG and drives Ray Data inside the calling Python
+process. Ray owns task/actor placement and block transport; Ray Data owns streaming execution,
+fusion and backpressure. A call does not create a driver process or cluster. All work targets
+one pre-existing cluster, whose lifecycle/dependencies belong to the platform.
 
-The spec contains `name`, `nodes` and `edges`, plus version/kind markers. It contains no cluster
-provisioning or workflow persistence policy. All calls in an application can share the same
-Ray session and workers; operator resources determine execution capacity within that cluster.
+`run_pipeline` executes a single DAG. `PipelineRunner` keeps one connection, a fixed set of DAG
+coordinator threads and one shared node-action ThreadPoolExecutor for many DAGs. These threads
+construct plans or wait for Ray work; business computation stays in Ray tasks/actors.
+There is no database, extra service, per-run cluster or intermediate artifact protocol.
 
-## Data and execution
+## Dependency scheduling
 
-Ordinary linear edges connect lazy Datasets. The sink starts execution and Ray Data pipelines
-blocks through operators. DataFlow does not collect the dataset into the driver and does not
-insert intermediate Parquet writes, artifact URIs or storage-service calls.
+Every node waits until all predecessor nodes complete. Completing an ordinary transform means
+its lazy Dataset plan is built, so downstream Ray Data operations can fuse/stream. An explicit
+cache or a control source is materialized before releasing dependents. A writer completes only
+after its output write returns. Independent nodes/sinks run concurrently up to the configured
+node-action limit. The coordinator uses completion notifications rather than polling.
 
-A data node with multiple consumers is materialized once. Its returned MaterializedDataset is
-reused by each branch, so independent sinks do not recompute their common prefix during a
-successful run. This is an object-store cache and an execution barrier, not a durable checkpoint.
-Handles are released after their final downstream consumer is constructed; downstream references
-still keep necessary blocks alive. Ray may reconstruct/retry work after failure.
+Each active DAG keeps at most `max_concurrent_nodes` node Futures. A shared runner executes at
+most that many actions globally; its finite action backlog is bounded by active DAGs times
+that limit. A DAG coordinator never occupies a node-action worker while waiting for dependencies,
+avoiding nested-pool starvation. Dataset handles are copied before concurrent consumption;
+blocks are not copied by this step. Do not mutate Ray DataContext or caller specs concurrently.
 
-A control edge waits for its source to complete before the target is constructed. A transform
-used as a control source is materialized; a write source has already completed its sink action.
-Control edges transfer no dataset. A transform/sink still needs one separate data input.
+## Sharing and fan-in
 
-The driver processes nodes and independent sinks in deterministic topological order. Execution
-inside a sink is distributed. Different pipeline drivers can run concurrently in the same
-cluster. DataFlow does not add a global scheduler or guarantee fairness between drivers.
+Fan-out stays lazy by default. Each consumer may execute the shared prefix again. This favors
+streaming and avoids an automatic whole-dataset barrier, but can cost substantial extra work.
+UDFs must tolerate recomputation/retries; avoid non-idempotent side effects in transforms.
+Use `.cache()` on an expensive shared prefix to materialize it once per run and reuse its blocks.
+Cache is a memory/execution tradeoff, not durable state or an adaptive memory budget.
 
-## Memory and guarantees
+Control edges force completed source work before constructing their targets. A transform used
+as a control source is materialized even without `.cache()`. A writer source has already
+completed its sink. Control edges transfer no data. `flow.after(source, target)` authors them.
 
-Ray stores blocks in its distributed object store; cross-node access involves network transfer.
-Compatible same-node representations can support zero-copy reads, while UDFs also allocate heap
-memory. Streaming backpressure helps bound working sets. Cached branches require their complete
-shared dataset and may cause Ray to spill to its configured local disks under memory pressure.
-DataFlow does not configure remote spilling or use S3 between operators.
+`union` appends rows from two or more same-schema inputs in explicit input-port order, without
+alignment or deduplication. Schema names/types are checked; schema discovery can trigger Ray
+sampling. `join` combines exactly two inputs by explicit keys and join type; port 0 is left,
+port 1 right. It uses Ray's hash-shuffle implementation and can materialize inputs/consume
+significant memory. Neither operator is a positional zip or an arbitrary Python fan-in callback.
 
-The supported operators are Parquet read/write, map_batches and filter, with data fan-out and
-control dependencies. Data fan-in is currently rejected. Validation occurs before connecting
-and before business IO; application imports may execute module initialization code.
+## Bounds and failures
 
-This component has no durable run registry, restart recovery, cross-sink atomic transaction or
-exactly-once workflow guarantee. Earlier sinks and partial files may remain after failure.
-Retry behavior within Ray follows Ray's configuration. The host owns resubmission and idempotency.
+Runner admission uses a bounded physical queue; a full queue blocks `submit`, or times out.
+`iter_completed` limits input consumption to active-plus-queued capacity and yields input index
+and result in completion order. Queued cancelled items occupy capacity until workers remove them.
+Completed results are not accumulated internally by the iterator.
+
+On an observed node failure, no new descendants are admitted. Queued node actions are cancelled
+where possible and started actions are drained before reporting failure. Other DAGs submitted
+individually can continue. A batch iterator stops refilling after an observed failure, cancels
+queued DAGs and drains started work. Already-started writes are not forcibly killed.
+
+Ray can transfer blocks over the network and spill to configured local disk; DataFlow configures
+no remote spilling or S3 handoff. Streaming lowers working sets but caching, join shuffle and
+many concurrent pipelines can still exceed available memory. Bounds limit admission/actions,
+not OS heap or all Ray task queues. Actor resource reservations must fit actual cluster capacity.
+
+The host owns request persistence, idempotent final writes and driver restart recovery. No
+cross-sink atomic commit, exactly-once workflow, global optimal fairness, cross-DAG model actor
+pool or automatic memory-aware admission is claimed. See [operations](operations.md) and
+[measured benchmark boundaries](performance.md).

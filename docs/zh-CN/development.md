@@ -58,3 +58,11 @@ Dockerfile 不启动管控服务，也不自动创建集群，由平台决定 he
 
 `docs/` 下每份 Markdown 均需有 `docs/zh-CN/` 对应版本和语言切换链接，文档测试会检查配对和本地链接。
 两种语言的可执行命令和 schema 名称应保持一致。
+
+
+## 并发 DAG 验证
+
+`src/dataflow/runner.py` 管理进程内有界多 DAG 准入和共享动作池。
+`tests/test_dag_concurrency.py` 使用确定的事件验证重叠执行、依赖、背压/取消、失败清理、汇合端口和提交快照。
+真实 Ray 模块共享一个 head/worker fixture，验证会话复用、union/join 语义及有界 runner，
+并生成[性能实验](performance.md)中的报告。生产正确性、吞吐和内存结论仍需真实负载证据。

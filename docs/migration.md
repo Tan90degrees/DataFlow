@@ -30,3 +30,11 @@ Install the new package into a clean environment or rebuild your cluster image. 
 service deployments through the platform's normal maintenance process. This source change does
 not stop deployed services, migrate a running database, or delete external business data.
 Validate idempotent outputs and required failure/recovery behavior before switching production.
+
+
+Concurrent DAG update: default fan-out no longer materializes automatically. Add `.cache()` to
+expensive shared prefixes when reuse is worth the memory/barrier cost. Control sources still
+materialize. Unary edge input_index defaults to 0; union/join edges need contiguous explicit
+ports. Use PipelineRunner for bounded multi-DAG work; single run_pipeline now overlaps ready
+nodes/sinks by default (set max_concurrent_nodes=1 for serial comparison). Concurrent sinks
+must use independent output paths. No durable checkpoint/rollback behavior was reintroduced.

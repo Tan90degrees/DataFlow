@@ -53,10 +53,17 @@ database, controller, chart or separate service to deploy. The platform manages 
 
 ## Execution boundaries
 
-Linear chains stream lazily; branches reuse a materialized Dataset in the object store.
-Ray can spill blocks to its configured local disks under memory pressure. Supported operators
-are Parquet read/write, map_batches and filter, with fan-out and control dependencies.
-Independent sinks execute sequentially per driver; fan-in is not yet supported.
+Linear chains stay lazy. Ready nodes and independent sinks execute with bounded concurrency.
+Shared prefixes are recomputed when consumed by different branches unless explicitly marked
+`.cache()`; caching materializes them once in the object store. Control dependencies also create
+completion barriers. Ray can spill cached blocks to its configured local disks under pressure.
+
+Parquet read/write, map_batches, filter, same-schema `union`, and keyed `join` are supported.
+Union appends rows; join requires explicit keys and partition count and uses Ray's shuffle path.
+
+For many DAGs, use one long-lived `PipelineRunner` with bounded active/queued DAGs and a shared
+node-action pool. See [concurrent file DAGs](examples/concurrent_dags.py),
+[SDK reference](docs/sdk.md) and [performance experiments](docs/performance.md).
 
 The host owns durable request history, restart recovery and idempotent final writes. A failed
 pipeline may leave partial outputs. Use a distinct output directory per attempt; Ray's Parquet

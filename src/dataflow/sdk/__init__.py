@@ -1,6 +1,7 @@
 """Python authoring and execution API for a shared Ray cluster."""
 
 from dataflow.contracts import ResourceSpec as Resources
+from dataflow.runner import PipelineBatchError, PipelineRunner, RunnerSnapshot
 from dataflow.sdk.builder import (
     DatasetNode,
     NodeHandle,
@@ -12,6 +13,9 @@ from dataflow.sdk.builder import (
 from dataflow.single_cluster import PipelineExecutionError, PipelineResult, run_pipeline
 
 __all__ = [
+    "PipelineBatchError",
+    "PipelineRunner",
+    "RunnerSnapshot",
     "DatasetNode",
     "NodeHandle",
     "PipelineBuilder",

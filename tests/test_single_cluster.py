@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import subprocess
 import sys
 from collections import Counter
@@ -18,11 +19,13 @@ from dataflow.single_cluster import (
 
 
 @pipeline(name="single-cluster")
-def example(flow, *, branch=False):
+def example(flow, *, branch=False, cache=False):
     data = flow.read_parquet("/input", node_id="read", resources=Resources(cpu=0.25))
     data = data.map_batches(
         "dataflow.callables.identity_batch", node_id="map", resources=Resources(cpu=2)
     )
+    if cache:
+        data = data.cache()
     data.write_parquet("/left", node_id="left", resources=Resources(cpu=0.5))
     if branch:
         data.filter("dataflow.callables.keep_all", node_id="filter").write_parquet(
@@ -34,6 +37,23 @@ class LazyDataset:
     def __init__(self, backend, name, parent=None):
         self.backend, self.name, self.parent = backend, name, parent
         self.cached = False
+
+    @staticmethod
+    def copy(dataset):
+        return copy.copy(dataset)
+
+    def schema(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(names=["value"], types=["int"])
+
+    def union(self, *others):
+        self.backend.calls.append(("union", len(others) + 1, {}))
+        return self
+
+    def join(self, other, **config):
+        self.backend.calls.append(("join", other.name, config))
+        return self
 
     def evaluate(self):
         if not self.cached:
@@ -49,11 +69,11 @@ class LazyDataset:
 
     def map_batches(self, fn, **config):
         self.backend.calls.append(("map", fn, config))
-        return LazyDataset(self.backend, "map", self)
+        return type(self)(self.backend, "map", self)
 
     def filter(self, fn, **config):
         self.backend.calls.append(("filter", fn, config))
-        return LazyDataset(self.backend, "filter", self)
+        return type(self)(self.backend, "filter", self)
 
     def write_parquet(self, path, **config):
         self.evaluate()
@@ -82,15 +102,12 @@ def test_linear_chain_streams_without_intermediate_materialization():
 
 def test_fanout_reuses_object_store_data_without_artifact_io():
     backend = LazyBackend()
-    result = SingleClusterExecutor(backend).execute(example.spec(branch=True))
+    result = SingleClusterExecutor(backend).execute(example.spec(branch=True, cache=True))
     assert result.output_paths == {"left": "/left", "right": "/right"}
     assert backend.evaluations == {"read": 1, "map": 1, "filter": 1}
-    assert [(c[0], c[1]) for c in backend.calls if c[0] in {"read", "write", "materialize"}] == [
-        ("read", "/input"),
-        ("materialize", "map"),
-        ("write", "/left"),
-        ("write", "/right"),
-    ]
+    assert [c[0] for c in backend.calls].count("materialize") == 1
+    assert [c[1] for c in backend.calls if c[0] == "read"] == ["/input"]
+    assert {c[1] for c in backend.calls if c[0] == "write"} == {"/left", "/right"}
 
 
 def test_cycle_and_dangling_transform_are_rejected_before_io():
@@ -133,7 +150,11 @@ def test_cli_runs_a_whole_json_pipeline_without_legacy_compilation(monkeypatch, 
     monkeypatch.setattr(sys, "argv", ["dataflow-run", str(path), "--address", "head:6379"])
     cli.run_pipeline_cli()
     assert execute.call_args.args[0] == example.spec()
-    assert execute.call_args.kwargs == {"address": "head:6379", "namespace": None}
+    assert execute.call_args.kwargs == {
+        "address": "head:6379",
+        "namespace": None,
+        "max_concurrent_nodes": 4,
+    }
     assert '"output_paths": {"left": "/left"}' in capsys.readouterr().out
 
 
@@ -146,7 +167,7 @@ def ray_session(monkeypatch):
     monkeypatch.setattr(ray, "is_initialized", Mock(return_value=False), raising=False)
     monkeypatch.setattr(ray, "init", Mock(), raising=False)
     monkeypatch.setattr(ray, "shutdown", Mock(), raising=False)
-    monkeypatch.setattr(SingleClusterExecutor, "execute", Mock(return_value="result"))
+    monkeypatch.setattr(SingleClusterExecutor, "_execute_graph", Mock(return_value="result"))
     monkeypatch.delenv("RAY_ADDRESS", raising=False)
     return ray
 
@@ -181,7 +202,7 @@ def test_environment_cannot_request_new_cluster(ray_session, monkeypatch):
 
 
 def test_disconnects_own_session_on_pipeline_failure(ray_session):
-    SingleClusterExecutor.execute.side_effect = RuntimeError("failed")
+    SingleClusterExecutor._execute_graph.side_effect = RuntimeError("failed")
     with pytest.raises(RuntimeError, match="failed"):
         run_pipeline(example.spec(), address="head:6379")
     ray_session.shutdown.assert_called_once_with()
